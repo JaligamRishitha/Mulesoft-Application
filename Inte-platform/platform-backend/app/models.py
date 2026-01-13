@@ -15,6 +15,23 @@ class IntegrationStatus(str, enum.Enum):
     STOPPED = "stopped"
     ERROR = "error"
 
+class ConnectorType(str, enum.Enum):
+    SAP = "sap"
+    SALESFORCE = "salesforce"
+    DATABASE = "database"
+    HTTP = "http"
+    SOAP = "soap"
+    KAFKA = "kafka"
+    FTP = "ftp"
+    EMAIL = "email"
+    AWS_S3 = "aws_s3"
+    AZURE_BLOB = "azure_blob"
+
+class ConnectorStatus(str, enum.Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    ERROR = "error"
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -70,3 +87,17 @@ class APIKey(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="api_keys")
+
+
+class Connector(Base):
+    __tablename__ = "connectors"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), index=True)
+    type = Column(Enum(ConnectorType))
+    description = Column(Text)
+    config = Column(JSON)  # Stores connection details (encrypted in production)
+    status = Column(Enum(ConnectorStatus), default=ConnectorStatus.INACTIVE)
+    last_tested = Column(DateTime)
+    owner_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

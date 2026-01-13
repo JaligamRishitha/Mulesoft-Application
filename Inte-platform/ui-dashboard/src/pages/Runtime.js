@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Tag, Space, Modal, List, message, Tooltip, Dropdown } from 'antd';
-import { PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, HeartOutlined, ThunderboltOutlined, ReloadOutlined, MoreOutlined } from '@ant-design/icons';
+import { Table, Button, Tag, Space, Modal, List, message, Tooltip } from 'antd';
+import { PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, HeartOutlined, ThunderboltOutlined, ReloadOutlined } from '@ant-design/icons';
 import api from '../api';
 
 export default function Runtime() {
@@ -63,28 +63,6 @@ export default function Runtime() {
     message[data.healthy ? 'success' : 'warning'](`${data.name}: ${healthStatus}${errorInfo}`); 
   };
 
-  const getActionItems = (record) => [
-    {
-      key: 'execute',
-      label: 'Execute Now',
-      icon: <ThunderboltOutlined />,
-      disabled: record.status !== 'deployed',
-      onClick: () => handleExecute(record.id)
-    },
-    {
-      key: 'logs',
-      label: 'View Logs',
-      icon: <FileTextOutlined />,
-      onClick: () => handleLogs(record.id, record.name)
-    },
-    {
-      key: 'health',
-      label: 'Health Check',
-      icon: <HeartOutlined />,
-      onClick: () => handleHealth(record.id)
-    }
-  ];
-
   const columns = [
     { title: 'Name', dataIndex: 'name', key: 'name' },
     { title: 'Description', dataIndex: 'description', key: 'description', ellipsis: true },
@@ -102,10 +80,10 @@ export default function Runtime() {
     { 
       title: 'Actions', 
       key: 'actions',
-      width: 200,
+      width: 220,
       render: (_, r) => (
-        <Space size="small">
-          <Tooltip title={r.status === 'deployed' ? 'Already running' : 'Start'}>
+        <Space size={4}>
+          <Tooltip title="Start">
             <Button 
               icon={<PlayCircleOutlined />} 
               onClick={() => handleStart(r.id)} 
@@ -114,15 +92,16 @@ export default function Runtime() {
               size="small"
             />
           </Tooltip>
-          <Tooltip title={r.status === 'stopped' ? 'Already stopped' : 'Stop'}>
+          <Tooltip title="Stop">
             <Button 
               icon={<PauseCircleOutlined />} 
               onClick={() => handleStop(r.id)} 
               disabled={r.status === 'stopped'}
               size="small"
+              danger={r.status === 'deployed'}
             />
           </Tooltip>
-          <Tooltip title="Execute now">
+          <Tooltip title="Execute">
             <Button 
               icon={<ThunderboltOutlined />} 
               onClick={() => handleExecute(r.id)}
@@ -132,9 +111,21 @@ export default function Runtime() {
               style={{ color: r.status === 'deployed' ? '#722ed1' : undefined }}
             />
           </Tooltip>
-          <Dropdown menu={{ items: getActionItems(r) }} trigger={['click']}>
-            <Button icon={<MoreOutlined />} size="small" />
-          </Dropdown>
+          <Tooltip title="Logs">
+            <Button 
+              icon={<FileTextOutlined />} 
+              onClick={() => handleLogs(r.id, r.name)}
+              size="small"
+            />
+          </Tooltip>
+          <Tooltip title="Health Check">
+            <Button 
+              icon={<HeartOutlined />} 
+              onClick={() => handleHealth(r.id)}
+              size="small"
+              style={{ color: '#eb2f96' }}
+            />
+          </Tooltip>
         </Space>
       )
     }
