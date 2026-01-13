@@ -1,0 +1,66 @@
+_format_version: "3.0"
+
+services:
+  - name: platform-api
+    url: http://platform-backend:8080
+    routes:
+      - name: platform-route
+        paths:
+          - /platform
+        strip_path: true
+
+  - name: integration-api
+    url: http://integration-engine:8081
+    routes:
+      - name: integration-route
+        paths:
+          - /engine
+        strip_path: true
+
+  - name: erp-api
+    url: http://erp-service:8091
+    routes:
+      - name: erp-route
+        paths:
+          - /erp
+        strip_path: true
+
+  - name: crm-api
+    url: http://crm-service:8092
+    routes:
+      - name: crm-route
+        paths:
+          - /crm
+        strip_path: true
+
+  - name: itsm-api
+    url: http://itsm-service:8093
+    routes:
+      - name: itsm-route
+        paths:
+          - /itsm
+        strip_path: true
+
+plugins:
+  - name: rate-limiting
+    config:
+      minute: 100
+      policy: local
+
+  - name: cors
+    config:
+      origins:
+        - "*"
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      headers:
+        - Authorization
+        - Content-Type
+      exposed_headers:
+        - X-Auth-Token
+      credentials: true
+      max_age: 3600

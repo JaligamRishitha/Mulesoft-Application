@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: openpoint
+      POSTGRES_USER: openpoint
+      POSTGRES_PASSWORD: openpoint123
+    ports:
+      - "1234:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - openpoint-network
+
+  # UI Dashboard
+  ui-dashboard:
+    build: ../ui-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:8080/api
+    depends_on:
+      - platform-backend
+    networks:
+      - openpoint-network
+
+  # Platform Backend (Python/FastAPI)
+  platform-backend:
+    build: ../platform-backend
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://openpoint:openpoint123@postgres:5432/openpoint
+      JWT_SECRET: openpoint-secret-key-change-in-production
+    depends_on:
+      - postgres
+    networks:
+      - openpoint-network
+
+  # Integration Engine (Apache Camel)
+  integration-engine:
+    build: ../integration-engine
+    ports:
+      - "8081:8081"
+    depends_on:
+      - platform-backend
+      - erp-service
+      - crm-service
+      - itsm-service
+    networks:
+      - openpoint-network
+
+  # Kong API Gateway
+  kong-database:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong123
+    volumes:
+      - kong_data:/var/lib/postgresql/data
+    networks:
+      - openpoint-network
+
+  kong-migration:
+    image: kong:3.4
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong123
+    depends_on:
+      - kong-database
+    networks:
+      - openpoint-network
+    restart: on-failure
+
+  kong:
+    image: kong:3.4
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong123
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    depends_on:
+      - kong-migration
+    networks:
+      - openpoint-network
+
+  # Mock Services
+  erp-service:
+    build: ../mock-services/erp-service
+    ports:
+      - "8091:8091"
+    networks:
+      - openpoint-network
+
+  crm-service:
+    build: ../mock-services/crm-service
+    ports:
+      - "8092:8092"
+    networks:
+      - openpoint-network
+
+  itsm-service:
+    build: ../mock-services/itsm-service
+    ports:
+      - "8093:8093"
+    networks:
+      - openpoint-network
+
+  # Observability
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - openpoint-network
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3002:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - openpoint-network
+
+volumes:
+  postgres_data:
+  kong_data:
+  grafana_data:
+
+networks:
+  openpoint-network:
+    driver: bridge

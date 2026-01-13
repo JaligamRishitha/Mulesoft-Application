@@ -1,0 +1,10 @@
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.site-layout-content {
+    padding: 24px;
+    min-height: calc(100vh - 64px);
+    background: #f0f2f5;
+}

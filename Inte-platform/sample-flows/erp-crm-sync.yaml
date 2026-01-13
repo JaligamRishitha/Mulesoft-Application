@@ -1,0 +1,11 @@
+routes:
+  - id: erp-crm-sync
+    from:
+      uri: timer:customerSync
+      parameters:
+        period: 300000
+    steps:
+      - to: http://erp-service:8091/orders
+      - log: "Fetched ${body.size()} orders from ERP"
+      - to: http://crm-service:8092/customers
+      - log: "Synced to CRM successfully"

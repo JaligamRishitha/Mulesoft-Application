@@ -1,0 +1,15 @@
+server:
+  port: 8081
+
+camel:
+  springboot:
+    name: openpoint-integration-engine
+  servlet:
+    mapping:
+      context-path: /camel/*
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
