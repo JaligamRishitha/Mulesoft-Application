@@ -1,11 +1,16 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from datetime import datetime
 
 app = FastAPI(title="Mock ITSM Service")
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"service": "ITSM Mock API", "version": "1.0.0", "endpoints": ["/tickets", "/incidents", "/changes", "/health"]}
+    try:
+        with open("templates/index.html", "r") as f:
+            return f.read()
+    except:
+        return {"service": "ITSM Mock API", "version": "1.0.0", "endpoints": ["/tickets", "/incidents", "/changes", "/health"]}
 
 @app.get("/tickets")
 def get_tickets():

@@ -1,11 +1,16 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from datetime import datetime
 
 app = FastAPI(title="Mock CRM Service")
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"service": "CRM Mock API", "version": "1.0.0", "endpoints": ["/customers", "/leads", "/opportunities", "/health"]}
+    try:
+        with open("templates/index.html", "r") as f:
+            return f.read()
+    except:
+        return {"service": "CRM Mock API", "version": "1.0.0", "endpoints": ["/customers", "/leads", "/opportunities", "/health"]}
 
 @app.get("/customers")
 def get_customers():

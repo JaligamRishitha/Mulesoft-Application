@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
-from app.routers import auth, integrations, apis, dashboard, runtime, connectors
+from app.routers import auth, integrations, apis, dashboard, runtime, connectors, proxy
 from app.database import engine, Base
 
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,7 @@ app.include_router(integrations.router, prefix="/api/integrations", tags=["Integ
 app.include_router(apis.router, prefix="/api/apis", tags=["API Management"])
 app.include_router(runtime.router, prefix="/api/runtime", tags=["Runtime"])
 app.include_router(connectors.router, prefix="/api", tags=["Connectors"])
+app.include_router(proxy.router, prefix="/api", tags=["Proxy"])
 
 @app.get("/health")
 def health_check():

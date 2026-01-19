@@ -1,22 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { Card, Select, Button, Space, Tag, Alert, Spin, Tabs, Table, Input, Form, message } from 'antd';
-import { ReloadOutlined, SendOutlined, CopyOutlined } from '@ant-design/icons';
+import React, { useState } from 'react';
+import { Card, Select, Button, Space, Tag, Alert, Input, message } from 'antd';
+import { SendOutlined, CopyOutlined } from '@ant-design/icons';
+import api from '../api';
 
 const { Option } = Select;
 const { TextArea } = Input;
 
-// Mock OpenAPI specs for different services
+// API specs for different services - calls go through backend proxy
 const apiSpecs = {
   platform: {
     name: 'Platform Backend API',
-    baseUrl: 'http://localhost:8080',
+    baseUrl: '/api',
+    direct: true,
     endpoints: [
-      { method: 'POST', path: '/api/auth/register', summary: 'Register new user', body: { email: 'user@example.com', password: 'password123', full_name: 'John Doe' } },
-      { method: 'POST', path: '/api/auth/login', summary: 'User login', body: { username: 'user@example.com', password: 'password123' } },
-      { method: 'GET', path: '/api/integrations', summary: 'List all integrations', auth: true },
-      { method: 'POST', path: '/api/integrations', summary: 'Create integration', auth: true, body: { name: 'New Integration', description: 'Description', flow_config: 'routes: []' } },
-      { method: 'GET', path: '/api/dashboard/stats', summary: 'Get dashboard statistics', auth: true },
-      { method: 'GET', path: '/api/apis/endpoints', summary: 'List API endpoints', auth: true },
+      { method: 'GET', path: '/dashboard/stats', summary: 'Get dashboard statistics', auth: true },
+      { method: 'GET', path: '/integrations', summary: 'List all integrations', auth: true },
+      { method: 'GET', path: '/apis/endpoints', summary: 'List API endpoints', auth: true },
+      { method: 'GET', path: '/connectors', summary: 'List connectors', auth: true },
     ]
   },
   erp: {
@@ -27,7 +27,6 @@ const apiSpecs = {
       { method: 'GET', path: '/health', summary: 'Health check' },
       { method: 'GET', path: '/api/products', summary: 'List products' },
       { method: 'GET', path: '/api/orders', summary: 'List orders' },
-      { method: 'POST', path: '/api/orders', summary: 'Create order', body: { product_id: 'PROD-001', quantity: 5, customer_id: 'CUST-001' } },
     ]
   },
   crm: {
@@ -38,7 +37,6 @@ const apiSpecs = {
       { method: 'GET', path: '/health', summary: 'Health check' },
       { method: 'GET', path: '/api/customers', summary: 'List customers' },
       { method: 'GET', path: '/api/contacts', summary: 'List contacts' },
-      { method: 'POST', path: '/api/customers', summary: 'Create customer', body: { name: 'New Customer', email: 'customer@example.com', company: 'Acme Inc' } },
     ]
   },
   itsm: {
@@ -48,7 +46,6 @@ const apiSpecs = {
       { method: 'GET', path: '/', summary: 'Service info' },
       { method: 'GET', path: '/health', summary: 'Health check' },
       { method: 'GET', path: '/api/incidents', summary: 'List incidents' },
-      { method: 'POST', path: '/api/incidents', summary: 'Create incident', body: { title: 'Server Down', priority: 'high', description: 'Production server not responding' } },
     ]
   }
 };
@@ -75,34 +72,53 @@ export default function SwaggerUI() {
     const startTime = Date.now();
     
     try {
-      const options = {
-        method: selectedEndpoint.method,
-        headers: { 'Content-Type': 'application/json' },
-      };
+      let res;
+      const duration = () => Date.now() - startTime;
       
-      if (selectedEndpoint.auth) {
-        const token = localStorage.getItem('token');
-        if (token) options.headers['Authorization'] = `Bearer ${token}`;
-      }
-      
-      if (selectedEndpoint.body && ['POST', 'PUT', 'PATCH'].includes(selectedEndpoint.method)) {
-        options.body = requestBody;
-      }
-      
-      const res = await fetch(`${currentApi.baseUrl}${selectedEndpoint.path}`, options);
-      const duration = Date.now() - startTime;
-      
-      let data;
-      const contentType = res.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        data = await res.json();
+      if (currentApi.direct) {
+        // Use axios api instance for platform backend
+        if (selectedEndpoint.method === 'GET') {
+          res = await api.get(selectedEndpoint.path);
+        } else if (selectedEndpoint.method === 'POST') {
+          res = await api.post(selectedEndpoint.path, requestBody ? JSON.parse(requestBody) : {});
+        }
+        setResponse({ 
+          status: res.status, 
+          statusText: 'OK', 
+          duration: duration(), 
+          data: res.data 
+        });
       } else {
-        data = await res.text();
+        // For external services, call through backend proxy
+        const proxyRes = await api.post('/proxy/request', {
+          url: `${currentApi.baseUrl}${selectedEndpoint.path}`,
+          method: selectedEndpoint.method,
+          body: selectedEndpoint.body && requestBody ? JSON.parse(requestBody) : null
+        });
+        setResponse({ 
+          status: proxyRes.data.status || 200, 
+          statusText: proxyRes.data.statusText || 'OK', 
+          duration: duration(), 
+          data: proxyRes.data.data || proxyRes.data 
+        });
       }
-      
-      setResponse({ status: res.status, statusText: res.statusText, duration, data, headers: Object.fromEntries(res.headers.entries()) });
     } catch (error) {
-      setResponse({ status: 0, statusText: 'Network Error', duration: Date.now() - startTime, data: { error: error.message } });
+      const duration = Date.now() - startTime;
+      if (error.response) {
+        setResponse({ 
+          status: error.response.status, 
+          statusText: error.response.statusText || 'Error', 
+          duration, 
+          data: error.response.data 
+        });
+      } else {
+        setResponse({ 
+          status: 0, 
+          statusText: 'Network Error', 
+          duration, 
+          data: { error: error.message, hint: 'Make sure the service is running' } 
+        });
+      }
     }
     
     setLoading(false);
@@ -125,15 +141,20 @@ export default function SwaggerUI() {
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>API Explorer</h2>
         <Space>
-          <Select value={selectedApi} onChange={setSelectedApi} style={{ width: 200 }}>
-            {Object.entries(apiSpecs).map(([key, api]) => (
-              <Option key={key} value={key}>{api.name}</Option>
+          <Select value={selectedApi} onChange={(v) => { setSelectedApi(v); setSelectedEndpoint(null); setResponse(null); }} style={{ width: 200 }}>
+            {Object.entries(apiSpecs).map(([key, apiDef]) => (
+              <Option key={key} value={key}>{apiDef.name}</Option>
             ))}
           </Select>
         </Space>
       </div>
 
-      <Alert message={`Base URL: ${currentApi.baseUrl}`} type="info" showIcon style={{ marginBottom: 16 }} />
+      <Alert 
+        message={currentApi.direct ? 'Platform API (Direct)' : `External Service: ${currentApi.baseUrl}`} 
+        type="info" 
+        showIcon 
+        style={{ marginBottom: 16 }} 
+      />
 
       <div style={{ display: 'flex', gap: 16 }}>
         {/* Endpoints List */}
@@ -165,7 +186,9 @@ export default function SwaggerUI() {
             <>
               <div style={{ marginBottom: 16 }}>
                 <Tag color={getMethodColor(selectedEndpoint.method)}>{selectedEndpoint.method}</Tag>
-                <span style={{ fontFamily: 'monospace', marginLeft: 8 }}>{currentApi.baseUrl}{selectedEndpoint.path}</span>
+                <span style={{ fontFamily: 'monospace', marginLeft: 8 }}>
+                  {currentApi.direct ? selectedEndpoint.path : `${currentApi.baseUrl}${selectedEndpoint.path}`}
+                </span>
               </div>
 
               {selectedEndpoint.body && (

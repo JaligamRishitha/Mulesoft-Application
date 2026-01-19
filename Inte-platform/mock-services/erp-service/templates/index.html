@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERP System - Mock Service</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f7fa;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 8px 8px 0 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .tab:hover {
+            background: #f0f0f0;
+        }
+
+        .tab.active:hover {
+            background: #667eea;
+        }
+
+        .content {
+            background: white;
+            padding: 25px;
+            border-radius: 0 8px 8px 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #f8f9fa;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            border-bottom: 2px solid #e9ecef;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge.shipped {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge.processing {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge.pending {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .badge.delivered {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .badge.paid {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge.overdue {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .stat-card h3 {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 8px;
+        }
+
+        .stat-card p {
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="container">
+            <h1>🏢 ERP System</h1>
+            <p>Enterprise Resource Planning - Mock Service</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('orders')">Orders</button>
+            <button class="tab" onclick="showTab('inventory')">Inventory</button>
+            <button class="tab" onclick="showTab('invoices')">Invoices</button>
+        </div>
+
+        <div class="content">
+            <div id="orders" class="tab-content active">
+                <div class="stats">
+                    <div class="stat-card">
+                        <h3>Total Orders</h3>
+                        <p id="totalOrders">-</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total Revenue</h3>
+                        <p id="totalRevenue">-</p>
+                    </div>
+                </div>
+                <div class="loading">Loading orders...</div>
+            </div>
+
+            <div id="inventory" class="tab-content">
+                <div class="loading">Loading inventory...</div>
+            </div>
+
+            <div id="invoices" class="tab-content">
+                <div class="loading">Loading invoices...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ordersData = [];
+        let inventoryData = [];
+        let invoicesData = [];
+
+        async function fetchData() {
+            try {
+                const [orders, inventory, invoices] = await Promise.all([
+                    fetch('/orders').then(r => r.json()),
+                    fetch('/inventory').then(r => r.json()),
+                    fetch('/invoices').then(r => r.json())
+                ]);
+                ordersData = orders;
+                inventoryData = inventory;
+                invoicesData = invoices;
+                renderOrders();
+                renderInventory();
+                renderInvoices();
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+
+        function renderOrders() {
+            const totalOrders = ordersData.length;
+            const totalRevenue = ordersData.reduce((sum, order) => sum + order.amount, 0);
+            document.getElementById('totalOrders').textContent = totalOrders;
+            document.getElementById('totalRevenue').textContent = '$' + totalRevenue.toLocaleString();
+
+            const html = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Order ID</th>
+                            <th>Customer</th>
+                            <th>Product</th>
+                            <th>Quantity</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${ordersData.map(order => `
+                            <tr>
+                                <td><strong>${order.id}</strong></td>
+                                <td>${order.customer}</td>
+                                <td>${order.product}</td>
+                                <td>${order.quantity}</td>
+                                <td>$${order.amount.toLocaleString()}</td>
+                                <td><span class="badge ${order.status}">${order.status}</span></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+            document.getElementById('orders').innerHTML = `
+                <div class="stats">
+                    <div class="stat-card">
+                        <h3>Total Orders</h3>
+                        <p>${totalOrders}</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total Revenue</h3>
+                        <p>$${totalRevenue.toLocaleString()}</p>
+                    </div>
+                </div>
+                ${html}
+            `;
+        }
+
+        function renderInventory() {
+            const html = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SKU</th>
+                            <th>Product Name</th>
+                            <th>Stock</th>
+                            <th>Warehouse</th>
+                            <th>Reorder Point</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${inventoryData.map(item => {
+                const needsReorder = item.stock <= item.reorderPoint;
+                return `
+                                <tr>
+                                    <td><strong>${item.sku}</strong></td>
+                                    <td>${item.name}</td>
+                                    <td>${item.stock}</td>
+                                    <td>${item.warehouse}</td>
+                                    <td>${item.reorderPoint}</td>
+                                    <td><span class="badge ${needsReorder ? 'pending' : 'shipped'}">${needsReorder ? 'Low Stock' : 'In Stock'}</span></td>
+                                </tr>
+                            `;
+            }).join('')}
+                    </tbody>
+                </table>
+            `;
+            document.getElementById('inventory').innerHTML = html;
+        }
+
+        function renderInvoices() {
+            const html = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Invoice ID</th>
+                            <th>Order ID</th>
+                            <th>Amount</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${invoicesData.map(invoice => `
+                            <tr>
+                                <td><strong>${invoice.id}</strong></td>
+                                <td>${invoice.orderId}</td>
+                                <td>$${invoice.amount.toLocaleString()}</td>
+                                <td>${invoice.dueDate}</td>
+                                <td><span class="badge ${invoice.status}">${invoice.status}</span></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+            document.getElementById('invoices').innerHTML = html;
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+        }
+
+        fetchData();
+        setInterval(fetchData, 30000);
+    </script>
+</body>
+
+</html>
