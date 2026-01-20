@@ -50,6 +50,7 @@ services:
       - erp-service
       - crm-service
       - itsm-service
+      - sap-erp-service
     networks:
       - openpoint-network
 
@@ -118,6 +119,13 @@ services:
     build: ../mock-services/itsm-service
     ports:
       - "8093:8093"
+    networks:
+      - openpoint-network
+
+  sap-erp-service:
+    build: ../mock-services/sap-erp-service
+    ports:
+      - "8094:8094"
     networks:
       - openpoint-network
 

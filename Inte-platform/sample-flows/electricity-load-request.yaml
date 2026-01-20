@@ -1,0 +1,26 @@
+routes:
+  - id: electricity-load-integration
+    description: "Transform JSON electricity load request to XML and send to SAP ERP"
+    from:
+      uri: "rest:post:/api/electricity-load-request"
+      parameters:
+        consumes: "application/json"
+        produces: "application/xml"
+    steps:
+      - log: "Received electricity load request: ${body}"
+      
+      # Transform JSON to XML using custom processor
+      - process:
+          ref: "electricityLoadTransformer"
+      
+      - log: "Transformed to XML format for SAP"
+      
+      # Send to SAP ERP system
+      - to: "http://sap-erp-service:8094/api/electricity-load-request"
+      
+      - log: "SAP Response received: ${body}"
+      
+      # Return XML response
+      - setHeader:
+          name: "Content-Type"
+          constant: "application/xml"

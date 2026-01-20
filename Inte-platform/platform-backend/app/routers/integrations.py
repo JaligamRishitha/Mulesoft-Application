@@ -3,16 +3,25 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 import yaml
+from datetime import datetime, timezone, timedelta
 from app.database import get_db
-from app.models import Integration, IntegrationStatus, User
+from app.models import Integration, IntegrationStatus, IntegrationLog, User
 from app.auth import get_current_user
 
 router = APIRouter()
+
+# IST timezone (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class IntegrationCreate(BaseModel):
     name: str
     description: Optional[str] = None
     flowConfig: str
+
+class LogCreate(BaseModel):
+    integrationId: int
+    level: str
+    message: str
 
 @router.get("/")
 def list_integrations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -65,3 +74,33 @@ def delete(id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
     db.delete(integration)
     db.commit()
     return {"message": "Deleted"}
+
+@router.post("/logs")
+def create_log(req: LogCreate, db: Session = Depends(get_db)):
+    """
+    Create a new integration log entry (called by Integration Engine)
+    No authentication required for internal service calls
+    """
+    # Convert to IST
+    ist_time = datetime.now(IST)
+    
+    log = IntegrationLog(
+        integration_id=req.integrationId,
+        level=req.level,
+        message=req.message,
+        timestamp=ist_time
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return {"id": log.id, "message": "Log created", "timestamp": ist_time.isoformat()}
+
+@router.get("/{id}/logs")
+def get_logs(id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    """
+    Get logs for a specific integration with IST timestamps
+    """
+    logs = db.query(IntegrationLog).filter(IntegrationLog.integration_id == id).order_by(IntegrationLog.timestamp.desc()).limit(100).all()
+    return [{"id": l.id, "level": l.level, "message": l.message, 
+             "timestamp": l.timestamp.replace(tzinfo=timezone.utc).astimezone(IST).isoformat()} for l in logs]
+
