@@ -25,6 +25,7 @@ import Metrics from './pages/Metrics';
 import APIDesigner from './pages/APIDesigner';
 import SwaggerUI from './pages/SwaggerUI';
 import Connectors from './pages/Connectors';
+import Events from './pages/Events';
 import Login from './pages/Login';
 
 const { Header, Content } = Layout;
@@ -65,6 +66,7 @@ export default function App() {
       { key: '/integrations', icon: <SwapOutlined />, label: 'Integration Designer', description: 'Design and manage integrations' },
       { key: '/runtime', icon: <RocketOutlined />, label: 'Runtime Manager', description: 'Deploy and monitor runtimes' },
       { key: '/connectors', icon: <LinkOutlined />, label: 'Connectors', description: 'Manage external connections' },
+      { key: '/events', icon: <MailOutlined />, label: 'Events', description: 'Live Salesforce cases and events' },
     ],
     onClick: ({ key }) => navigate(key)
   };
@@ -122,7 +124,7 @@ export default function App() {
 
   const getActiveMenu = () => {
     const path = location.pathname;
-    if (['/integrations', '/runtime', '/connectors'].includes(path)) return 'integrations';
+    if (['/integrations', '/runtime', '/connectors', '/events'].includes(path)) return 'integrations';
     if (['/apis', '/api-designer', '/api-explorer'].includes(path)) return 'apis';
     if (['/', '/metrics'].includes(path)) return 'monitoring';
     return '';
@@ -243,6 +245,7 @@ export default function App() {
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/runtime" element={<Runtime />} />
             <Route path="/connectors" element={<Connectors />} />
+            <Route path="/events" element={<Events />} />
             <Route path="/apis" element={<APIs />} />
             <Route path="/api-designer" element={<APIDesigner />} />
             <Route path="/api-explorer" element={<SwaggerUI />} />

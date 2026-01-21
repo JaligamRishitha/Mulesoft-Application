@@ -19,9 +19,9 @@ services:
   ui-dashboard:
     build: ../ui-dashboard
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
-      REACT_APP_API_URL: http://localhost:8080/api
+      REACT_APP_API_URL: http://localhost:8085/api
     depends_on:
       - platform-backend
     networks:
@@ -31,7 +31,7 @@ services:
   platform-backend:
     build: ../platform-backend
     ports:
-      - "8080:8080"
+      - "8085:8080"
     environment:
       DATABASE_URL: postgresql://openpoint:openpoint123@postgres:5432/openpoint
       JWT_SECRET: openpoint-secret-key-change-in-production
@@ -47,10 +47,6 @@ services:
       - "8081:8081"
     depends_on:
       - platform-backend
-      - erp-service
-      - crm-service
-      - itsm-service
-      - sap-erp-service
     networks:
       - openpoint-network
 
@@ -83,7 +79,7 @@ services:
   kong:
     image: kong:3.4
     ports:
-      - "8000:8000"
+      - "8002:8000"
       - "8001:8001"
     environment:
       KONG_DATABASE: postgres
@@ -100,34 +96,7 @@ services:
     networks:
       - openpoint-network
 
-  # Mock Services
-  erp-service:
-    build: ../mock-services/erp-service
-    ports:
-      - "8091:8091"
-    networks:
-      - openpoint-network
-
-  crm-service:
-    build: ../mock-services/crm-service
-    ports:
-      - "8092:8092"
-    networks:
-      - openpoint-network
-
-  itsm-service:
-    build: ../mock-services/itsm-service
-    ports:
-      - "8093:8093"
-    networks:
-      - openpoint-network
-
-  sap-erp-service:
-    build: ../mock-services/sap-erp-service
-    ports:
-      - "8094:8094"
-    networks:
-      - openpoint-network
+  # Mock Services - REMOVED - Using external Salesforce app on port 5173
 
   # Observability
   prometheus:

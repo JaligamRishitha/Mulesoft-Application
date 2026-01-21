@@ -101,3 +101,25 @@ class Connector(Base):
     owner_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class SalesforceCase(Base):
+    __tablename__ = "salesforce_cases"
+    id = Column(Integer, primary_key=True, index=True)
+    salesforce_id = Column(String(18), unique=True, index=True)  # Salesforce 18-char ID
+    case_number = Column(String(50))
+    subject = Column(String(255))
+    description = Column(Text)
+    status = Column(String(50))
+    priority = Column(String(50))
+    origin = Column(String(50))
+    account_id = Column(String(18))
+    account_name = Column(String(255))
+    contact_id = Column(String(18))
+    contact_name = Column(String(255))
+    owner_id = Column(String(18))
+    owner_name = Column(String(255))
+    created_date = Column(DateTime)
+    closed_date = Column(DateTime)
+    last_modified_date = Column(DateTime)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+    raw_data = Column(JSON)  # Store complete Salesforce response

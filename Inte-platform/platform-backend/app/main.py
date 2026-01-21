@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
-from app.routers import auth, integrations, apis, dashboard, runtime, connectors, proxy
+from app.routers import auth, integrations, apis, dashboard, runtime, connectors, proxy, salesforce_cases, transform, sap_integration
 from app.database import engine, Base
 
 Base.metadata.create_all(bind=engine)
@@ -34,7 +34,14 @@ app.include_router(apis.router, prefix="/api/apis", tags=["API Management"])
 app.include_router(runtime.router, prefix="/api/runtime", tags=["Runtime"])
 app.include_router(connectors.router, prefix="/api", tags=["Connectors"])
 app.include_router(proxy.router, prefix="/api", tags=["Proxy"])
+app.include_router(salesforce_cases.router, prefix="/api", tags=["Salesforce Cases"])
+app.include_router(transform.router, prefix="/api", tags=["Data Transformation"])
+app.include_router(sap_integration.router, prefix="/api", tags=["SAP Integration"])
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "platform-backend"}
+    return {"status": "healthy", "service": "platform-backend", "timestamp": "2024-01-21T02:15:00Z"}
+
+@app.get("/api/test")
+def test_endpoint():
+    return {"message": "Backend is working!", "cors": "enabled", "timestamp": "2024-01-21T02:15:00Z"}
