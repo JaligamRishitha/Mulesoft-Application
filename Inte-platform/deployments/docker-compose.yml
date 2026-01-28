@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: openpoint
       POSTGRES_PASSWORD: openpoint123
     ports:
-      - "1234:5432"
+      - "9888:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -31,7 +31,7 @@ services:
   platform-backend:
     build: ../platform-backend
     ports:
-      - "8085:8080"
+      - "4797:4797"
     environment:
       DATABASE_URL: postgresql://openpoint:openpoint123@postgres:5432/openpoint
       JWT_SECRET: openpoint-secret-key-change-in-production

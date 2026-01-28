@@ -93,13 +93,14 @@ class APIKey(Base):
 class Connector(Base):
     __tablename__ = "connectors"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), index=True)
-    type = Column(Enum(ConnectorType))
-    description = Column(Text)
-    config = Column(JSON)  # Stores connection details (encrypted in production)
-    status = Column(Enum(ConnectorStatus), default=ConnectorStatus.INACTIVE)
-    last_tested = Column(DateTime)
-    owner_id = Column(Integer, ForeignKey("users.id"))
+    connector_name = Column(String(255), unique=True, index=True)
+    connector_type = Column(String(50))
+    connection_config = Column(JSON)  # Stores connection details (encrypted in production)
+    credentials_ref = Column(String(255))
+    status = Column(String(50), default="Active")
+    health_check_url = Column(String(500))
+    last_health_check = Column(DateTime)
+    health_status = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

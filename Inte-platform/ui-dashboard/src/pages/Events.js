@@ -210,11 +210,10 @@ export default function Events() {
   };
 
   useEffect(() => {
-    fetchSalesforceCases();
-
-    // Refresh data every 2 minutes
-    const interval = setInterval(fetchSalesforceCases, 120000);
-    return () => clearInterval(interval);
+    // Only fetch connector info on load, not external Salesforce data
+    // User can click "Refresh" to fetch cases after configuring the connector
+    fetchSalesforceConnector();
+    setLoading(false);
   }, []);
 
   const handleRowExpand = (expanded, record) => {

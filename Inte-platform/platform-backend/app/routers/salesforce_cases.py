@@ -8,7 +8,7 @@ import base64
 import json
 
 from app.database import get_db
-from app.models import SalesforceCase, Connector, ConnectorType, ConnectorStatus, IntegrationLog
+from app.models import SalesforceCase, Connector, IntegrationLog
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/cases", tags=["Salesforce Cases"])
@@ -159,15 +159,15 @@ async def sync_salesforce_cases(
     # Get Salesforce connector
     connector = db.query(Connector).filter(
         Connector.id == connector_id,
-        Connector.type == ConnectorType.SALESFORCE
+        Connector.connector_type == "salesforce"
     ).first()
-    
+
     if not connector:
         raise HTTPException(status_code=404, detail="Salesforce connector not found")
-    
+
     try:
         # Get Salesforce auth token
-        auth = await get_salesforce_token(connector.config)
+        auth = await get_salesforce_token(connector.connection_config or {})
         
         # Fetch cases from Salesforce
         cases_data = await fetch_salesforce_cases(auth, limit)
@@ -343,13 +343,13 @@ async def fetch_external_account_requests(
     """Fetch new account creation requests from the external Salesforce application"""
     connector = db.query(Connector).filter(
         Connector.id == connector_id,
-        Connector.type == ConnectorType.SALESFORCE
+        Connector.connector_type == "salesforce"
     ).first()
 
     if not connector:
         raise HTTPException(status_code=404, detail="Salesforce connector not found")
 
-    server_url = connector.config.get("server_url", "").rstrip("/")
+    server_url = (connector.connection_config or {}).get("server_url", "").rstrip("/")
     if not server_url:
         raise HTTPException(status_code=400, detail="Server URL is not configured")
 
@@ -403,13 +403,13 @@ async def fetch_external_cases(
     """Fetch cases from remote Salesforce backend application using connector config"""
     connector = db.query(Connector).filter(
         Connector.id == connector_id,
-        Connector.type == ConnectorType.SALESFORCE
+        Connector.connector_type == "salesforce"
     ).first()
 
     if not connector:
         raise HTTPException(status_code=404, detail="Salesforce connector not found")
 
-    server_url = connector.config.get("server_url", "").rstrip("/")
+    server_url = (connector.connection_config or {}).get("server_url", "").rstrip("/")
     if not server_url:
         raise HTTPException(status_code=400, detail="Server URL is not configured")
 
@@ -559,12 +559,12 @@ async def orchestrate_account_requests(
     # Get Salesforce connector
     sf_connector = db.query(Connector).filter(
         Connector.id == connector_id,
-        Connector.type == ConnectorType.SALESFORCE
+        Connector.connector_type == "salesforce"
     ).first()
     if not sf_connector:
         raise HTTPException(status_code=404, detail="Salesforce connector not found")
 
-    sf_url = sf_connector.config.get("server_url", "").rstrip("/")
+    sf_url = (sf_connector.connection_config or {}).get("server_url", "").rstrip("/")
     if not sf_url:
         raise HTTPException(status_code=400, detail="Salesforce server URL is not configured")
 
@@ -573,8 +573,8 @@ async def orchestrate_account_requests(
     try:
         all_connectors = db.query(Connector).all()
         for c in all_connectors:
-            if c.type and c.type.value == "servicenow" and c.config:
-                sn_url = c.config.get("server_url", sn_url).rstrip("/")
+            if c.connector_type == "servicenow" and c.connection_config:
+                sn_url = c.connection_config.get("server_url", sn_url).rstrip("/")
                 break
     except Exception:
         pass

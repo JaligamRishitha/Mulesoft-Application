@@ -12,7 +12,7 @@ import httpx
 import json
 
 from app.database import get_db
-from app.models import Connector, ConnectorType, IntegrationLog
+from app.models import Connector, IntegrationLog
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/servicenow", tags=["ServiceNow Integration"])
@@ -59,10 +59,10 @@ class ServiceNowResponse(BaseModel):
 def get_servicenow_base_url(db: Session) -> str:
     """Get ServiceNow base URL from connector config"""
     connector = db.query(Connector).filter(
-        Connector.type == ConnectorType.SERVICENOW
+        Connector.connector_type == "servicenow"
     ).first()
-    if connector and connector.config:
-        return connector.config.get("server_url", SERVICENOW_BASE_URL).rstrip("/")
+    if connector and connector.connection_config:
+        return connector.connection_config.get("server_url", SERVICENOW_BASE_URL).rstrip("/")
     return SERVICENOW_BASE_URL
 
 

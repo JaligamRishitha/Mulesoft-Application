@@ -96,66 +96,19 @@ export default function Dashboard() {
   const [sfConnector, setSfConnector] = useState(null);
 
   useEffect(() => {
-    const fetchRealData = async () => {
-      setLoading(true);
+    // Only fetch connectors on load, don't auto-fetch external Salesforce data
+    // User can connect to Salesforce through Connectors page
+    const fetchConnectors = async () => {
       try {
-        // First get the Salesforce connector
-        let connector = null;
-        try {
-          const { data: connectors } = await api.get('/connectors');
-          connector = connectors.find(c => c.type === 'salesforce');
-          if (connector) setSfConnector(connector);
-        } catch (e) {
-          console.error('Error fetching connectors:', e);
-        }
-
-        if (!connector) {
-          throw new Error('No Salesforce connector configured');
-        }
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-        const casesResponse = await api.get(`/cases/external/cases?connector_id=${connector.id}`, {
-          signal: controller.signal,
-          timeout: 5000
-        });
-
-        clearTimeout(timeoutId);
-
-        if (casesResponse.data.status === 'success') {
-          const cases = casesResponse.data.cases.items || casesResponse.data.cases || [];
-          setSalesforceCases(cases);
-
-          const realStats = {
-            apiCount: 1,
-            activeIntegrations: 1,
-            errorRate: 0,
-            throughput: cases.length * 10
-          };
-          setStats(realStats);
-        } else {
-          throw new Error('Failed to fetch cases from remote server');
-        }
-      } catch (error) {
-        console.error('Error fetching real data:', error);
-        setStats({
-          apiCount: 1,
-          activeIntegrations: 1,
-          errorRate: 5.2,
-          throughput: 0,
-          error: 'Remote Salesforce server not available'
-        });
-        setSalesforceCases([]);
-      } finally {
-        setLoading(false);
+        const { data: connectors } = await api.get('/connectors/');
+        const connector = connectors.find(c => c.type === 'salesforce');
+        if (connector) setSfConnector(connector);
+      } catch (e) {
+        console.error('Error fetching connectors:', e);
       }
     };
 
-    setTimeout(fetchRealData, 100);
-
-    const interval = setInterval(fetchRealData, 60000);
-    return () => clearInterval(interval);
+    fetchConnectors();
   }, []);
 
   const trafficData = [120, 85, 145, 178, 320, 580, 720, 650, 890, 560, 440, 380];

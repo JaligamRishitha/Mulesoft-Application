@@ -6,30 +6,37 @@ from datetime import datetime
 import httpx
 
 from app.database import get_db
-from app.models import Connector, ConnectorType, ConnectorStatus
+from app.models import Connector
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
 class ConnectorCreate(BaseModel):
-    name: str
-    type: ConnectorType
-    description: Optional[str] = None
-    config: Dict[str, Any]
+    connector_name: str
+    connector_type: str
+    connection_config: Dict[str, Any]
+    credentials_ref: Optional[str] = None
+    health_check_url: Optional[str] = None
 
 class ConnectorUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
+    connector_name: Optional[str] = None
+    connection_config: Optional[Dict[str, Any]] = None
+    credentials_ref: Optional[str] = None
+    health_check_url: Optional[str] = None
+    status: Optional[str] = None
 
 class ConnectorResponse(BaseModel):
     id: int
-    name: str
-    type: ConnectorType
-    description: Optional[str]
-    status: ConnectorStatus
-    last_tested: Optional[datetime]
-    created_at: datetime
+    connector_name: str
+    connector_type: str
+    connection_config: Optional[Dict[str, Any]]
+    credentials_ref: Optional[str]
+    status: Optional[str]
+    health_check_url: Optional[str]
+    last_health_check: Optional[datetime]
+    health_status: Optional[str]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
 
     class Config:
         from_attributes = True
@@ -140,11 +147,12 @@ async def list_connectors(db: Session = Depends(get_db), current_user = Depends(
 async def create_connector(connector: ConnectorCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     """Create a new connector"""
     db_connector = Connector(
-        name=connector.name,
-        type=connector.type,
-        description=connector.description,
-        config=connector.config,
-        owner_id=current_user.id
+        connector_name=connector.connector_name,
+        connector_type=connector.connector_type,
+        connection_config=connector.connection_config,
+        credentials_ref=connector.credentials_ref,
+        health_check_url=connector.health_check_url,
+        status="Active"
     )
     db.add(db_connector)
     db.commit()
@@ -165,14 +173,18 @@ async def update_connector(connector_id: int, update: ConnectorUpdate, db: Sessi
     connector = db.query(Connector).filter(Connector.id == connector_id).first()
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    
-    if update.name:
-        connector.name = update.name
-    if update.description:
-        connector.description = update.description
-    if update.config:
-        connector.config = update.config
-    
+
+    if update.connector_name:
+        connector.connector_name = update.connector_name
+    if update.connection_config:
+        connector.connection_config = update.connection_config
+    if update.credentials_ref:
+        connector.credentials_ref = update.credentials_ref
+    if update.health_check_url:
+        connector.health_check_url = update.health_check_url
+    if update.status:
+        connector.status = update.status
+
     db.commit()
     db.refresh(connector)
     return connector
@@ -194,11 +206,11 @@ async def test_connector(connector_id: int, db: Session = Depends(get_db), curre
     connector = db.query(Connector).filter(Connector.id == connector_id).first()
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    
-    config = connector.config
+
+    config = connector.connection_config or {}
     success = False
     message = ""
-    
+
     try:
         server_url = config.get("server_url", "").rstrip("/")
         if not server_url:
@@ -208,16 +220,18 @@ async def test_connector(connector_id: int, db: Session = Depends(get_db), curre
                 response = await client.get(server_url)
                 success = response.status_code < 500
                 message = f"Connected to remote server (HTTP {response.status_code})"
-        
+
         # Update connector status
-        connector.status = ConnectorStatus.ACTIVE if success else ConnectorStatus.ERROR
-        connector.last_tested = datetime.utcnow()
+        connector.status = "Active" if success else "Error"
+        connector.health_status = "healthy" if success else "unhealthy"
+        connector.last_health_check = datetime.utcnow()
         db.commit()
-        
+
     except Exception as e:
-        connector.status = ConnectorStatus.ERROR
-        connector.last_tested = datetime.utcnow()
+        connector.status = "Error"
+        connector.health_status = "unhealthy"
+        connector.last_health_check = datetime.utcnow()
         db.commit()
         message = str(e)
-    
+
     return {"success": success, "message": message, "status": connector.status}
