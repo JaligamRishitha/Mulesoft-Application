@@ -18,6 +18,15 @@ const ConnectorLogos = {
       <text x="50" y="72" textAnchor="middle" fill="white" fontSize="10" fontWeight="bold">Salesforce</text>
     </svg>
   ),
+  servicenow: () => (
+    <svg width="40" height="40" viewBox="0 0 100 100" fill="none">
+      <rect width="100" height="100" rx="8" fill="#81B5A1"/>
+      <circle cx="50" cy="50" r="25" fill="white"/>
+      <circle cx="50" cy="50" r="15" fill="#81B5A1"/>
+      <circle cx="50" cy="50" r="8" fill="white"/>
+      <text x="50" y="88" textAnchor="middle" fill="white" fontSize="9" fontWeight="bold">ServiceNow</text>
+    </svg>
+  ),
   database: () => (
     <svg width="40" height="40" viewBox="0 0 100 100" fill="none">
       <rect width="100" height="100" rx="8" fill="#336791"/>
@@ -142,16 +151,16 @@ export default function Connectors() {
       setConnectorTypes(data);
     } catch (err) {
       setConnectorTypes({
-        sap: { name: 'SAP', description: 'Connect to SAP ERP, S/4HANA', config_schema: { host: { type: 'string', label: 'Host', required: true }, username: { type: 'string', label: 'Username', required: true }, password: { type: 'password', label: 'Password', required: true } } },
-        salesforce: { name: 'Salesforce', description: 'Connect to Salesforce CRM', config_schema: { instance_url: { type: 'string', label: 'Instance URL', required: true }, client_id: { type: 'string', label: 'Client ID', required: true }, client_secret: { type: 'password', label: 'Client Secret', required: true } } },
-        database: { name: 'Database', description: 'PostgreSQL, MySQL, Oracle', config_schema: { db_type: { type: 'select', label: 'Type', options: ['PostgreSQL', 'MySQL', 'Oracle'], required: true }, host: { type: 'string', label: 'Host', required: true }, port: { type: 'number', label: 'Port', required: true }, database: { type: 'string', label: 'Database', required: true }, username: { type: 'string', label: 'Username', required: true }, password: { type: 'password', label: 'Password', required: true } } },
-        http: { name: 'HTTP/REST', description: 'Connect to REST APIs', config_schema: { base_url: { type: 'string', label: 'Base URL', required: true }, auth_type: { type: 'select', label: 'Auth', options: ['None', 'Basic', 'Bearer', 'API Key'] } } },
-        kafka: { name: 'Apache Kafka', description: 'Event streaming platform', config_schema: { bootstrap_servers: { type: 'string', label: 'Servers', required: true } } },
-        ftp: { name: 'FTP/SFTP', description: 'File transfer servers', config_schema: { host: { type: 'string', label: 'Host', required: true }, username: { type: 'string', label: 'Username', required: true }, password: { type: 'password', label: 'Password', required: true } } },
-        email: { name: 'Email', description: 'SMTP/IMAP servers', config_schema: { host: { type: 'string', label: 'Host', required: true }, port: { type: 'number', label: 'Port', required: true }, username: { type: 'string', label: 'Username', required: true }, password: { type: 'password', label: 'Password', required: true } } },
-        aws_s3: { name: 'AWS S3', description: 'Amazon S3 storage', config_schema: { access_key_id: { type: 'string', label: 'Access Key', required: true }, secret_access_key: { type: 'password', label: 'Secret Key', required: true }, region: { type: 'string', label: 'Region' } } },
-        azure_blob: { name: 'Azure Blob', description: 'Azure Blob Storage', config_schema: { connection_string: { type: 'password', label: 'Connection String', required: true } } },
-        soap: { name: 'SOAP', description: 'SOAP Web Services', config_schema: { wsdl_url: { type: 'string', label: 'WSDL URL', required: true } } },
+        sap: { name: 'SAP', description: 'Connect to remote SAP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        salesforce: { name: 'Salesforce', description: 'Connect to remote Salesforce backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        database: { name: 'Database', description: 'Connect to remote Database backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        http: { name: 'HTTP/REST', description: 'Connect to remote HTTP/REST backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        kafka: { name: 'Apache Kafka', description: 'Connect to remote Kafka backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        ftp: { name: 'FTP/SFTP', description: 'Connect to remote FTP/SFTP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        email: { name: 'Email', description: 'Connect to remote Email backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        aws_s3: { name: 'AWS S3', description: 'Connect to remote AWS S3 backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        azure_blob: { name: 'Azure Blob', description: 'Connect to remote Azure Blob backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
+        soap: { name: 'SOAP', description: 'Connect to remote SOAP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
       });
     }
   };

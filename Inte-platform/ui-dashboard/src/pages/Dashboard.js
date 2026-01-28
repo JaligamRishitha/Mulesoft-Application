@@ -92,29 +92,41 @@ export default function Dashboard() {
     throughput: 0
   });
   const [salesforceCases, setSalesforceCases] = useState([]);
-  const [loading, setLoading] = useState(false); // Changed from true to false for faster initial render
+  const [loading, setLoading] = useState(false);
+  const [sfConnector, setSfConnector] = useState(null);
 
   useEffect(() => {
-    // Fetch real data from external Salesforce app with timeout
     const fetchRealData = async () => {
       setLoading(true);
       try {
-        // Add timeout to prevent hanging
+        // First get the Salesforce connector
+        let connector = null;
+        try {
+          const { data: connectors } = await api.get('/connectors');
+          connector = connectors.find(c => c.type === 'salesforce');
+          if (connector) setSfConnector(connector);
+        } catch (e) {
+          console.error('Error fetching connectors:', e);
+        }
+
+        if (!connector) {
+          throw new Error('No Salesforce connector configured');
+        }
+
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-        
-        const casesResponse = await api.get('/cases/external/cases', {
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const casesResponse = await api.get(`/cases/external/cases?connector_id=${connector.id}`, {
           signal: controller.signal,
           timeout: 5000
         });
-        
+
         clearTimeout(timeoutId);
-        
+
         if (casesResponse.data.status === 'success') {
           const cases = casesResponse.data.cases.items || casesResponse.data.cases || [];
           setSalesforceCases(cases);
-          
-          // Calculate real stats from Salesforce data
+
           const realStats = {
             apiCount: 1,
             activeIntegrations: 1,
@@ -123,17 +135,16 @@ export default function Dashboard() {
           };
           setStats(realStats);
         } else {
-          throw new Error('Failed to fetch Salesforce data');
+          throw new Error('Failed to fetch cases from remote server');
         }
       } catch (error) {
         console.error('Error fetching real data:', error);
-        // Fallback to basic stats if external app is not available
-        setStats({ 
-          apiCount: 1, 
-          activeIntegrations: 1, 
-          errorRate: 5.2, 
+        setStats({
+          apiCount: 1,
+          activeIntegrations: 1,
+          errorRate: 5.2,
           throughput: 0,
-          error: 'External Salesforce app not available'
+          error: 'Remote Salesforce server not available'
         });
         setSalesforceCases([]);
       } finally {
@@ -141,10 +152,8 @@ export default function Dashboard() {
       }
     };
 
-    // Initial load with delay to allow UI to render first
     setTimeout(fetchRealData, 100);
-    
-    // Refresh data every 60 seconds (reduced from 30 for better performance)
+
     const interval = setInterval(fetchRealData, 60000);
     return () => clearInterval(interval);
   }, []);
@@ -156,47 +165,58 @@ export default function Dashboard() {
     { label: '2pm', value: 4 }, { label: '4pm', value: 12 }, { label: '6pm', value: 6 }
   ];
 
+  const sfServerUrl = sfConnector?.config?.server_url || 'not configured';
+
   const integrationStatus = [
-    { 
-      name: 'External Salesforce Integration', 
-      status: salesforceCases.length > 0 ? 'deployed' : 'error', 
-      requests: salesforceCases.length * 50, 
-      latency: 85, 
+    {
+      name: 'Remote Salesforce Integration',
+      status: salesforceCases.length > 0 ? 'deployed' : 'error',
+      requests: salesforceCases.length * 50,
+      latency: 85,
       health: salesforceCases.length > 0 ? 98 : 0,
-      description: `Connected to external Salesforce app (port 5173)`
+      description: `Connected to ${sfServerUrl}`
     },
-    { 
-      name: 'Platform Event Processor', 
-      status: salesforceCases.length > 0 ? 'deployed' : 'stopped', 
-      requests: salesforceCases.length * 25, 
-      latency: 42, 
+    {
+      name: 'Salesforce to ServiceNow',
+      status: salesforceCases.length > 0 ? 'deployed' : 'stopped',
+      requests: salesforceCases.length * 30,
+      latency: 95,
+      health: salesforceCases.length > 0 ? 96 : 0,
+      description: 'User account requests → ServiceNow tickets & approvals'
+    },
+    {
+      name: 'Platform Event Processor',
+      status: salesforceCases.length > 0 ? 'deployed' : 'stopped',
+      requests: salesforceCases.length * 25,
+      latency: 42,
       health: salesforceCases.length > 0 ? 95 : 0,
       description: 'Converts Salesforce cases to platform events'
     },
-    { 
-      name: 'Case Sync Service', 
-      status: salesforceCases.length > 0 ? 'deployed' : 'error', 
-      requests: salesforceCases.length * 10, 
-      latency: 120, 
+    {
+      name: 'Case Sync Service',
+      status: salesforceCases.length > 0 ? 'deployed' : 'error',
+      requests: salesforceCases.length * 10,
+      latency: 120,
       health: salesforceCases.length > 0 ? 92 : 0,
       description: 'Real-time case synchronization'
     }
   ];
 
   const recentLogs = salesforceCases.length > 0 ? [
-    { time: new Date().toLocaleTimeString(), level: 'INFO', message: `Successfully fetched ${salesforceCases.length} cases from external Salesforce app`, integration: 'Salesforce Sync' },
-    { time: new Date(Date.now() - 60000).toLocaleTimeString(), level: 'INFO', message: 'Authentication successful with external app', integration: 'Salesforce Auth' },
+    { time: new Date().toLocaleTimeString(), level: 'INFO', message: `Successfully fetched ${salesforceCases.length} cases from remote Salesforce server`, integration: 'Salesforce Sync' },
+    { time: new Date(Date.now() - 60000).toLocaleTimeString(), level: 'INFO', message: `Connected to ${sfServerUrl}`, integration: 'Salesforce Connection' },
     { time: new Date(Date.now() - 120000).toLocaleTimeString(), level: 'INFO', message: 'Platform event format conversion completed', integration: 'Event Processor' },
     { time: new Date(Date.now() - 180000).toLocaleTimeString(), level: 'INFO', message: 'Real-time data sync active', integration: 'Case Sync' },
   ] : [
-    { time: new Date().toLocaleTimeString(), level: 'ERROR', message: 'Cannot connect to external Salesforce app on port 5173', integration: 'Salesforce Sync' },
-    { time: new Date(Date.now() - 60000).toLocaleTimeString(), level: 'WARN', message: 'Retrying connection to external app...', integration: 'Salesforce Auth' },
-    { time: new Date(Date.now() - 120000).toLocaleTimeString(), level: 'ERROR', message: 'Authentication failed - check external app status', integration: 'Salesforce Auth' },
+    { time: new Date().toLocaleTimeString(), level: 'ERROR', message: `Cannot connect to remote Salesforce server at ${sfServerUrl}`, integration: 'Salesforce Sync' },
+    { time: new Date(Date.now() - 60000).toLocaleTimeString(), level: 'WARN', message: 'Retrying connection to remote server...', integration: 'Salesforce Connection' },
+    { time: new Date(Date.now() - 120000).toLocaleTimeString(), level: 'ERROR', message: 'Connection failed - check server status', integration: 'Salesforce Connection' },
     { time: new Date(Date.now() - 180000).toLocaleTimeString(), level: 'WARN', message: 'Falling back to cached data', integration: 'Case Sync' },
   ];
 
   const serviceHealth = [
-    { service: 'External Salesforce App', status: salesforceCases.length > 0 ? 'healthy' : 'error', latency: 85, uptime: salesforceCases.length > 0 ? 99.7 : 0 },
+    { service: 'Remote Salesforce Server', status: salesforceCases.length > 0 ? 'healthy' : 'error', latency: 85, uptime: salesforceCases.length > 0 ? 99.7 : 0 },
+    { service: 'ServiceNow ITSM', status: 'healthy', latency: 92, uptime: 99.5 },
     { service: 'Platform Backend', status: 'healthy', latency: 12, uptime: 100 },
     { service: 'Kong Gateway', status: 'healthy', latency: 8, uptime: 100 },
     { service: 'Database', status: 'healthy', latency: 5, uptime: 99.9 },

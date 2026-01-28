@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 from app.database import SessionLocal, engine, Base
 from app.models import User, Integration, IntegrationLog, APIEndpoint, APIKey, Connector, UserRole, IntegrationStatus, ConnectorType, ConnectorStatus
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from app.auth import get_password_hash
 import secrets
 from datetime import datetime, timedelta
@@ -24,9 +26,9 @@ def seed_database():
     
     # Create Salesforce Integration (basic)
     integration = Integration(
-        name="External Salesforce Integration",
-        description="Real-time integration with external Salesforce application on port 5173",
-        flow_config='routes:\n  - from: "rest:get:/api/cases/external/cases"\n    process: "salesforceDataProcessor"\n    to: "http://host.docker.internal:5173/api/cases"',
+        name="Remote Salesforce Integration",
+        description="Real-time integration with remote Salesforce backend application",
+        flow_config='routes:\n  - from: "rest:get:/api/cases/external/cases"\n    process: "salesforceDataProcessor"\n    to: "connector:salesforce:/api/cases"',
         status=IntegrationStatus.DEPLOYED,
         owner_id=admin.id
     )
@@ -52,20 +54,13 @@ def seed_database():
     db.add(sf_to_sap_integration)
     db.commit()
     
-    # Create Salesforce Connector pointing to external app on port 5173
+    # Create Salesforce Connector pointing to remote server
     salesforce_connector = Connector(
-        name="External Salesforce App",
+        name="Salesforce App",
         type=ConnectorType.SALESFORCE,
-        description="External Salesforce application connector",
+        description="Remote Salesforce backend application connector - User Account Creation Requests",
         config={
-            "instance_url": "http://host.docker.internal:5173",
-            "client_id": "external_app",
-            "client_secret": "external_secret",
-            "username": "admin",
-            "password": "admin123",
-            "security_token": "",
-            "auth_endpoint": "/api/auth/login",
-            "cases_endpoint": "/api/cases"
+            "server_url": "https://149.102.158.71:4799"
         },
         status=ConnectorStatus.ACTIVE,
         owner_id=admin.id,
@@ -74,23 +69,13 @@ def seed_database():
     db.add(salesforce_connector)
     db.commit()
 
-    # Create SAP Connector pointing to external app on port 2004
+    # Create SAP Connector pointing to remote server
     sap_connector = Connector(
         name="SAP ERP System",
         type=ConnectorType.SAP,
-        description="SAP ERP connector for electricity load requests",
+        description="Remote SAP ERP backend application connector",
         config={
-            "host": "host.docker.internal",
-            "port": "2004",
-            "base_url": "http://host.docker.internal:2004",
-            "endpoints": {
-                "load_request_xml": "/api/integration/mulesoft/load-request/xml",
-                "load_request_json": "/api/integration/mulesoft/load-request",
-                "webhook": "/api/integration/webhook"
-            },
-            "api_type": "REST",
-            "content_type": "application/xml",
-            "partner_number": "SALESFORCE"
+            "server_url": "http://host.docker.internal:2004"
         },
         status=ConnectorStatus.ACTIVE,
         owner_id=admin.id,
@@ -99,16 +84,61 @@ def seed_database():
     db.add(sap_connector)
     db.commit()
 
+    # Create ServiceNow Connector pointing to remote server
+    servicenow_connector = Connector(
+        name="ServiceNow ITSM",
+        type=ConnectorType.SERVICENOW,
+        description="Remote ServiceNow ITSM application for tickets and approvals",
+        config={
+            "server_url": "http://149.102.158.71:4780"
+        },
+        status=ConnectorStatus.ACTIVE,
+        owner_id=admin.id,
+        last_tested=datetime.utcnow()
+    )
+    db.add(servicenow_connector)
+    db.commit()
+
+    # Create Salesforce to ServiceNow Integration
+    sf_to_snow_integration = Integration(
+        name="Salesforce to ServiceNow - User Account Requests",
+        description="Fetch user account creation requests from Salesforce and send as tickets and approvals to ServiceNow ITSM",
+        flow_config='''routes:
+  - from: "salesforce:user-account-requests"
+    description: "Fetch user account creation requests from Salesforce"
+    transform:
+      type: "servicenow_ticket"
+      ticket_type: "incident"
+    to: "servicenow:tickets"
+    parallel:
+      - transform:
+          type: "servicenow_approval"
+          approval_type: "user_account"
+        to: "servicenow:approvals"
+    error_handler: "dead-letter-queue"''',
+        status=IntegrationStatus.DEPLOYED,
+        owner_id=admin.id
+    )
+    db.add(sf_to_snow_integration)
+    db.commit()
+
     print("Database seeded successfully!")
     print("\nTest Accounts:")
     print("  admin@mulesoft.io / admin123")
     print("  developer@mulesoft.io / dev123")
     print("\nIntegrations Created:")
-    print("  1. External Salesforce Integration - DEPLOYED")
+    print("  1. Remote Salesforce Integration - DEPLOYED")
     print("  2. Salesforce Case to SAP Service Request - DRAFT (with transform)")
+    print("  3. Salesforce to ServiceNow - User Account Requests - DEPLOYED")
     print("\nConnectors Created:")
-    print("  1. External Salesforce App (port 5173) - ACTIVE")
-    print("  2. SAP ERP System (port 2004) - ACTIVE")
+    print("  1. Salesforce App (https://149.102.158.71:4799) - ACTIVE")
+    print("  2. SAP ERP System (server_url configured) - ACTIVE")
+    print("  3. ServiceNow ITSM (http://149.102.158.71:4780) - ACTIVE")
+    print("\nServiceNow Integration Endpoints:")
+    print("  POST /api/servicenow/send-ticket - Send ticket to ServiceNow")
+    print("  POST /api/servicenow/send-approval - Send approval to ServiceNow")
+    print("  POST /api/servicenow/send-ticket-and-approval - Send both")
+    print("  GET  /api/servicenow/test-connection - Test ServiceNow connection")
     print("\nSAP Integration Endpoints:")
     print("  POST /api/sap/send-load-request - Send ElectricityLoadRequest XML to SAP")
     print("  POST /api/sap/preview-xml - Preview XML transformation")
@@ -117,8 +147,6 @@ def seed_database():
     print("  POST /api/transform/preview - Preview JSON to XML transformation")
     print("  POST /api/transform/execute - Execute transformation")
     print("  GET  /api/transform/templates - Get available templates")
-    print("\nSAP Target Endpoint:")
-    print("  http://localhost:2004/api/integration/mulesoft/load-request/xml")
     
     db.close()
 

@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import httpx
-import asyncio
 
 from app.database import get_db
 from app.models import Connector, ConnectorType, ConnectorStatus
@@ -40,127 +39,89 @@ CONNECTOR_TYPES = {
     "sap": {
         "name": "SAP",
         "icon": "🏢",
-        "description": "Connect to SAP ERP, S/4HANA, or SAP Cloud",
+        "description": "Connect to remote SAP backend application",
         "config_schema": {
-            "host": {"type": "string", "label": "SAP Host", "required": True},
-            "client": {"type": "string", "label": "Client", "required": True},
-            "username": {"type": "string", "label": "Username", "required": True},
-            "password": {"type": "password", "label": "Password", "required": True},
-            "system_number": {"type": "string", "label": "System Number", "default": "00"},
-            "api_type": {"type": "select", "label": "API Type", "options": ["OData", "RFC", "BAPI", "IDoc"], "default": "OData"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "salesforce": {
         "name": "Salesforce",
         "icon": "☁️",
-        "description": "Connect to Salesforce CRM",
+        "description": "Connect to remote Salesforce backend application",
         "config_schema": {
-            "instance_url": {"type": "string", "label": "Instance URL", "required": True, "placeholder": "https://yourorg.salesforce.com"},
-            "client_id": {"type": "string", "label": "Client ID", "required": True},
-            "client_secret": {"type": "password", "label": "Client Secret", "required": True},
-            "username": {"type": "string", "label": "Username", "required": True},
-            "password": {"type": "password", "label": "Password", "required": True},
-            "security_token": {"type": "password", "label": "Security Token"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
+        }
+    },
+    "servicenow": {
+        "name": "ServiceNow",
+        "icon": "🎫",
+        "description": "Connect to remote ServiceNow ITSM application for tickets and approvals",
+        "config_schema": {
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "database": {
         "name": "Database",
         "icon": "🗄️",
-        "description": "Connect to SQL databases (PostgreSQL, MySQL, Oracle, SQL Server)",
+        "description": "Connect to remote Database backend application",
         "config_schema": {
-            "db_type": {"type": "select", "label": "Database Type", "options": ["PostgreSQL", "MySQL", "Oracle", "SQL Server", "SQLite"], "required": True},
-            "host": {"type": "string", "label": "Host", "required": True},
-            "port": {"type": "number", "label": "Port", "required": True},
-            "database": {"type": "string", "label": "Database Name", "required": True},
-            "username": {"type": "string", "label": "Username", "required": True},
-            "password": {"type": "password", "label": "Password", "required": True},
-            "ssl": {"type": "boolean", "label": "Use SSL", "default": False}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "http": {
         "name": "HTTP/REST",
         "icon": "🌐",
-        "description": "Connect to any REST API",
+        "description": "Connect to remote HTTP/REST backend application",
         "config_schema": {
-            "base_url": {"type": "string", "label": "Base URL", "required": True, "placeholder": "https://api.example.com"},
-            "auth_type": {"type": "select", "label": "Auth Type", "options": ["None", "Basic", "Bearer Token", "API Key", "OAuth2"], "default": "None"},
-            "username": {"type": "string", "label": "Username"},
-            "password": {"type": "password", "label": "Password"},
-            "api_key": {"type": "password", "label": "API Key"},
-            "api_key_header": {"type": "string", "label": "API Key Header", "default": "X-API-Key"},
-            "bearer_token": {"type": "password", "label": "Bearer Token"},
-            "timeout": {"type": "number", "label": "Timeout (seconds)", "default": 30}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "soap": {
         "name": "SOAP",
         "icon": "📄",
-        "description": "Connect to SOAP web services",
+        "description": "Connect to remote SOAP backend application",
         "config_schema": {
-            "wsdl_url": {"type": "string", "label": "WSDL URL", "required": True},
-            "username": {"type": "string", "label": "Username"},
-            "password": {"type": "password", "label": "Password"},
-            "timeout": {"type": "number", "label": "Timeout (seconds)", "default": 30}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "kafka": {
         "name": "Apache Kafka",
         "icon": "📨",
-        "description": "Connect to Kafka message broker",
+        "description": "Connect to remote Kafka backend application",
         "config_schema": {
-            "bootstrap_servers": {"type": "string", "label": "Bootstrap Servers", "required": True, "placeholder": "localhost:9092"},
-            "security_protocol": {"type": "select", "label": "Security Protocol", "options": ["PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"], "default": "PLAINTEXT"},
-            "sasl_mechanism": {"type": "select", "label": "SASL Mechanism", "options": ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"]},
-            "username": {"type": "string", "label": "Username"},
-            "password": {"type": "password", "label": "Password"},
-            "group_id": {"type": "string", "label": "Consumer Group ID"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "ftp": {
         "name": "FTP/SFTP",
         "icon": "📁",
-        "description": "Connect to FTP or SFTP servers",
+        "description": "Connect to remote FTP/SFTP backend application",
         "config_schema": {
-            "protocol": {"type": "select", "label": "Protocol", "options": ["FTP", "SFTP"], "default": "SFTP"},
-            "host": {"type": "string", "label": "Host", "required": True},
-            "port": {"type": "number", "label": "Port", "default": 22},
-            "username": {"type": "string", "label": "Username", "required": True},
-            "password": {"type": "password", "label": "Password"},
-            "private_key": {"type": "textarea", "label": "Private Key (for SFTP)"},
-            "remote_path": {"type": "string", "label": "Remote Path", "default": "/"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "email": {
         "name": "Email",
         "icon": "📧",
-        "description": "Connect to email servers (SMTP/IMAP)",
+        "description": "Connect to remote Email backend application",
         "config_schema": {
-            "protocol": {"type": "select", "label": "Protocol", "options": ["SMTP", "IMAP"], "required": True},
-            "host": {"type": "string", "label": "Host", "required": True},
-            "port": {"type": "number", "label": "Port", "required": True},
-            "username": {"type": "string", "label": "Username", "required": True},
-            "password": {"type": "password", "label": "Password", "required": True},
-            "use_tls": {"type": "boolean", "label": "Use TLS", "default": True}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "aws_s3": {
         "name": "AWS S3",
         "icon": "🪣",
-        "description": "Connect to Amazon S3 storage",
+        "description": "Connect to remote AWS S3 backend application",
         "config_schema": {
-            "access_key_id": {"type": "string", "label": "Access Key ID", "required": True},
-            "secret_access_key": {"type": "password", "label": "Secret Access Key", "required": True},
-            "region": {"type": "string", "label": "Region", "default": "us-east-1"},
-            "bucket": {"type": "string", "label": "Default Bucket"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     },
     "azure_blob": {
         "name": "Azure Blob Storage",
         "icon": "☁️",
-        "description": "Connect to Azure Blob Storage",
+        "description": "Connect to remote Azure Blob backend application",
         "config_schema": {
-            "connection_string": {"type": "password", "label": "Connection String", "required": True},
-            "container": {"type": "string", "label": "Default Container"}
+            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
         }
     }
 }
@@ -239,32 +200,14 @@ async def test_connector(connector_id: int, db: Session = Depends(get_db), curre
     message = ""
     
     try:
-        if connector.type == ConnectorType.HTTP:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(config.get("base_url", ""))
-                success = response.status_code < 500
-                message = f"HTTP {response.status_code}"
-        
-        elif connector.type == ConnectorType.DATABASE:
-            # Simulate database connection test
-            await asyncio.sleep(0.5)
-            success = True
-            message = "Connection successful"
-        
-        elif connector.type == ConnectorType.SAP:
-            # Simulate SAP connection test
-            await asyncio.sleep(1)
-            if config.get("host") and config.get("username"):
-                success = True
-                message = "SAP connection established"
-            else:
-                message = "Missing required configuration"
-        
+        server_url = config.get("server_url", "").rstrip("/")
+        if not server_url:
+            message = "Server URL is not configured"
         else:
-            # Generic test for other types
-            await asyncio.sleep(0.5)
-            success = True
-            message = "Connection test passed"
+            async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                response = await client.get(server_url)
+                success = response.status_code < 500
+                message = f"Connected to remote server (HTTP {response.status_code})"
         
         # Update connector status
         connector.status = ConnectorStatus.ACTIVE if success else ConnectorStatus.ERROR

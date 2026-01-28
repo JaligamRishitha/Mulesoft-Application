@@ -96,7 +96,7 @@ services:
     networks:
       - openpoint-network
 
-  # Mock Services - REMOVED - Using external Salesforce app on port 5173
+  # Mock Services - REMOVED - Using remote server URLs configured in Connectors
 
   # Observability
   prometheus:

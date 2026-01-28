@@ -18,6 +18,7 @@ class IntegrationStatus(str, enum.Enum):
 class ConnectorType(str, enum.Enum):
     SAP = "sap"
     SALESFORCE = "salesforce"
+    SERVICENOW = "servicenow"
     DATABASE = "database"
     HTTP = "http"
     SOAP = "soap"
