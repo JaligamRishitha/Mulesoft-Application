@@ -5,6 +5,7 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   ExclamationCircleOutlined,
+  CloseCircleOutlined,
   ReloadOutlined,
   EyeOutlined,
   CodeOutlined,
@@ -152,10 +153,15 @@ export default function Events() {
   const [orchestrationResult, setOrchestrationResult] = useState(null);
   const [activeTab, setActiveTab] = useState('cases');
 
+  // Per-request validation and send status
+  const [requestStates, setRequestStates] = useState({}); // { requestId: { validating, validated, validationResult, sending, sent, sendResult, checkingStatus, ticketStatus } }
+  const [validatingId, setValidatingId] = useState(null); // Track which request is being validated
+  const [sendingId, setSendingId] = useState(null); // Track which request is being sent
+
   const fetchSalesforceConnector = async () => {
     try {
       const { data } = await api.get('/connectors');
-      const connector = data.find(c => c.type === 'salesforce');
+      const connector = data.find(c => c.connector_type === 'salesforce');
       if (connector) {
         setSfConnector(connector);
         // Fetch full config for this connector
@@ -317,8 +323,8 @@ export default function Events() {
     }
   };
 
-  // Open ServiceNow modal and preview payloads
-  const handleSendToServiceNow = async (caseData) => {
+  // Open ServiceNow modal and preview payloads (for Salesforce cases)
+  const openServiceNowModal = async (caseData) => {
     setSnowModal({ visible: true, caseData, loading: true });
     setSnowResult(null);
 
@@ -448,6 +454,144 @@ export default function Events() {
     }
   };
 
+  // Validate a single request
+  const handleValidate = async (request) => {
+    setValidatingId(request.id);
+    try {
+      let connector = sfConnector;
+      if (!connector) {
+        connector = await fetchSalesforceConnector();
+      }
+      if (!connector) {
+        throw new Error('No Salesforce connector configured.');
+      }
+
+      const response = await api.post(`/cases/validate-single-request?connector_id=${connector.id}`, {
+        request_id: request.id,
+        account_name: request.name
+      });
+
+      if (response.data.valid) {
+        message.success('Validation passed!');
+      } else {
+        message.warning('Validation failed: ' + (response.data.errors?.join(', ') || 'Unknown error'));
+      }
+
+      // Refresh the list to show updated integration_status
+      await fetchAccountRequests();
+    } catch (err) {
+      message.error('Validation error: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setValidatingId(null);
+    }
+  };
+
+  // Send a single request to ServiceNow
+  const handleSendToServiceNow = async (request) => {
+    // Check if validated (integration_status should be VALIDATED after validation)
+    const integrationStatus = request.integration_status?.toUpperCase() || '';
+    if (integrationStatus !== 'VALIDATED') {
+      message.warning('Please validate the request first');
+      return;
+    }
+
+    setSendingId(request.id);
+    try {
+      let connector = sfConnector;
+      if (!connector) {
+        connector = await fetchSalesforceConnector();
+      }
+      if (!connector) {
+        throw new Error('No Salesforce connector configured.');
+      }
+
+      const response = await api.post(`/cases/send-single-to-servicenow?connector_id=${connector.id}`, {
+        request_id: request.id,
+        account_name: request.name,
+        request_data: request
+      });
+
+      if (response.data.success) {
+        message.success('Request sent to ServiceNow successfully!');
+      } else {
+        message.error('Failed to send to ServiceNow: ' + (response.data.error || 'Unknown error'));
+      }
+
+      // Refresh the list to show updated status
+      await fetchAccountRequests();
+    } catch (err) {
+      message.error('Send error: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setSendingId(null);
+    }
+  };
+
+  // Check ServiceNow ticket status
+  const checkServiceNowStatus = async (request) => {
+    const requestId = request.id;
+    const ticketId = request.servicenow_ticket_id;
+
+    if (!ticketId) {
+      message.warning('No ServiceNow ticket found for this request');
+      return;
+    }
+
+    setRequestStates(prev => ({
+      ...prev,
+      [requestId]: { ...prev[requestId], checkingStatus: true }
+    }));
+
+    try {
+      let connector = sfConnector;
+      if (!connector) {
+        connector = await fetchSalesforceConnector();
+      }
+
+      const response = await api.get(`/servicenow/ticket-status/${ticketId}`, {
+        params: {
+          connector_id: connector?.id,
+          request_id: requestId
+        },
+        timeout: 15000
+      });
+      const result = response.data;
+
+      setRequestStates(prev => ({
+        ...prev,
+        [requestId]: {
+          ...prev[requestId],
+          checkingStatus: false,
+          ticketStatus: result
+        }
+      }));
+
+      if (result.status === 'approved') {
+        message.success(`Ticket ${ticketId} has been APPROVED!`);
+      } else if (result.status === 'rejected') {
+        message.error(`Ticket ${ticketId} has been REJECTED`);
+      } else {
+        message.info(`Ticket ${ticketId} status: ${result.status}`);
+      }
+
+      // Refresh account requests to get updated status from Salesforce
+      await fetchAccountRequests();
+    } catch (err) {
+      console.error('Check status error:', err);
+      setRequestStates(prev => ({
+        ...prev,
+        [requestId]: {
+          ...prev[requestId],
+          checkingStatus: false,
+          ticketStatus: {
+            status: 'unknown',
+            error: err.response?.data?.detail || err.message || 'Failed to check status'
+          }
+        }
+      }));
+      message.error('Failed to check ServiceNow ticket status');
+    }
+  };
+
   // Run full orchestration
   const runOrchestration = async () => {
     setOrchestrating(true);
@@ -469,7 +613,7 @@ export default function Events() {
       setOrchestrationResult(response.data);
 
       if (response.data.total_sent_to_servicenow > 0) {
-        message.success(`${response.data.total_sent_to_servicenow} requests validated and sent to ServiceNow for manual approval`);
+        message.success(`${response.data.total_sent_to_servicenow} requests validated and sent to ServiceNow for approval`);
       } else if (response.data.total_fetched === 0) {
         message.info('No pending account requests to process');
       } else if (response.data.total_invalid > 0) {
@@ -504,15 +648,28 @@ export default function Events() {
     return <Tag icon={c.icon} color={c.color} style={{ borderRadius: 12, fontWeight: 500 }}>{status || 'Unknown'}</Tag>;
   };
 
-  const IntegrationStatusTag = ({ status }) => {
+  const IntegrationStatusTag = ({ status, servicenowStatus }) => {
+    // Check ServiceNow status for approved/rejected
+    const snStatus = servicenowStatus?.toLowerCase();
+    if (snStatus === 'approved') {
+      return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, fontWeight: 600 }}>APPROVED</Tag>;
+    }
+    if (snStatus === 'rejected') {
+      return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, fontWeight: 600 }}>REJECTED</Tag>;
+    }
+
+    const upperStatus = status?.toUpperCase() || '';
     const config = {
-      'COMPLETED': { color: 'green' },
-      'FAILED': { color: 'red' },
-      'REQUESTED': { color: 'blue' },
-      'PENDING': { color: 'orange' }
+      'COMPLETED': { color: 'green', icon: <CheckCircleOutlined />, label: 'COMPLETED' },
+      'FAILED': { color: 'red', icon: <CloseCircleOutlined />, label: 'FAILED' },
+      'REQUESTED': { color: 'blue', icon: <ClockCircleOutlined />, label: 'AWAITING APPROVAL' },
+      'PENDING': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING' },
+      'PENDING_MULE': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING' },
+      'PENDING_MULESOFT': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING_MULESOFT' },
+      'VALIDATED': { color: 'cyan', icon: <CheckCircleOutlined />, label: 'VALIDATED' }
     };
-    const c = config[status] || { color: 'default' };
-    return <Tag color={c.color} style={{ borderRadius: 12 }}>{status || 'N/A'}</Tag>;
+    const c = config[upperStatus] || { color: 'default', icon: null };
+    return <Tag icon={c.icon} color={c.color} style={{ borderRadius: 12 }}>{c.label || status || 'N/A'}</Tag>;
   };
 
   const accountColumns = [
@@ -530,46 +687,107 @@ export default function Events() {
       render: (name) => <Text strong style={{ color: '#262626' }}>{name}</Text>
     },
     {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      width: 140,
-      render: (status) => <RequestStatus status={status} />
-    },
-    {
       title: 'Integration',
       dataIndex: 'integration_status',
       key: 'integration_status',
-      width: 130,
-      render: (status) => <IntegrationStatusTag status={status} />
+      width: 140,
+      render: (status, record) => <IntegrationStatusTag status={status} servicenowStatus={record.servicenow_status} />
     },
     {
       title: 'ServiceNow Ticket',
       dataIndex: 'servicenow_ticket_id',
       key: 'servicenow_ticket_id',
-      width: 160,
+      width: 150,
       render: (id) => id ? <Tag color="purple" style={{ borderRadius: 8 }}>{id}</Tag> : <Text type="secondary">-</Text>
     },
     {
       title: 'MuleSoft TX ID',
       dataIndex: 'mulesoft_transaction_id',
       key: 'mulesoft_transaction_id',
-      width: 170,
+      width: 160,
       render: (id) => id ? <Tag color="cyan" style={{ borderRadius: 8 }}>{id}</Tag> : <Text type="secondary">-</Text>
     },
     {
       title: 'Created Account',
       dataIndex: 'created_account_id',
       key: 'created_account_id',
-      width: 130,
+      width: 120,
       render: (id) => id ? <Tag color="green" icon={<CheckCircleOutlined />} style={{ borderRadius: 8 }}>Account #{id}</Tag> : <Text type="secondary">Not yet</Text>
     },
     {
       title: 'Requested At',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 140,
+      width: 130,
       render: (date) => <Text style={{ fontSize: 12, color: '#8c8c8c' }}>{date ? new Date(date).toLocaleString() : 'N/A'}</Text>
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 280,
+      fixed: 'right',
+      render: (_, record) => {
+        const integrationStatus = record.integration_status?.toUpperCase() || '';
+        const isPending = integrationStatus === 'PENDING' || integrationStatus === 'PENDING_MULE' || integrationStatus === 'PENDING_MULESOFT' || integrationStatus === '';
+        const isValidated = integrationStatus === 'VALIDATED';
+        const alreadySent = integrationStatus === 'COMPLETED' || integrationStatus === 'REQUESTED';
+        const hasTicket = record.servicenow_ticket_id;
+        const snStatus = record.servicenow_status?.toLowerCase();
+        const isApproved = snStatus === 'approved';
+        const isRejected = snStatus === 'rejected';
+
+        return (
+          <Space size="small">
+            <Tooltip title={alreadySent ? 'Already sent' : isPending ? 'Validate this request' : isValidated ? 'Already validated' : 'Cannot validate'}>
+              <Button
+                icon={<FileProtectOutlined />}
+                size="small"
+                loading={validatingId === record.id}
+                disabled={!isPending || alreadySent || validatingId === record.id}
+                onClick={(e) => { e.stopPropagation(); handleValidate(record); }}
+                style={{
+                  borderRadius: 6,
+                  background: isValidated ? '#f6ffed' : undefined,
+                  borderColor: isValidated ? '#b7eb8f' : undefined,
+                  color: isValidated ? '#52c41a' : undefined
+                }}
+              >
+                {isValidated ? 'Validated' : 'Validate'}
+              </Button>
+            </Tooltip>
+            <Tooltip title={!isValidated ? 'Validate first' : alreadySent ? 'Already sent' : 'Send to ServiceNow'}>
+              <Button
+                icon={<SendOutlined />}
+                size="small"
+                loading={sendingId === record.id}
+                disabled={!isValidated || alreadySent || sendingId === record.id}
+                onClick={(e) => { e.stopPropagation(); handleSendToServiceNow(record); }}
+                style={{
+                  borderRadius: 6,
+                  background: alreadySent ? '#f6ffed' : '#722ed1',
+                  borderColor: alreadySent ? '#b7eb8f' : '#722ed1',
+                  color: alreadySent ? '#52c41a' : '#fff'
+                }}
+              >
+                {alreadySent ? 'Sent' : 'ServiceNow'}
+              </Button>
+            </Tooltip>
+            {hasTicket && !isApproved && !isRejected && (
+              <Tooltip title="Check ServiceNow approval status">
+                <Button
+                  icon={<SyncOutlined spin={requestStates[record.id]?.checkingStatus} />}
+                  size="small"
+                  loading={requestStates[record.id]?.checkingStatus}
+                  onClick={(e) => { e.stopPropagation(); checkServiceNowStatus(record); }}
+                  style={{ borderRadius: 6 }}
+                >
+                  Check
+                </Button>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      }
     }
   ];
 
@@ -677,7 +895,7 @@ export default function Events() {
             <Button
               icon={<SendOutlined />}
               size="small"
-              onClick={() => handleSendToServiceNow(record.originalData)}
+              onClick={() => openServiceNowModal(record.originalData)}
               style={{ borderRadius: 6, background: '#81B5A1', borderColor: '#81B5A1', color: '#fff' }}
             >
               ServiceNow
@@ -956,12 +1174,14 @@ export default function Events() {
             children: (
               <>
                 <Alert
-                  message="Salesforce → MuleSoft (Validate) → ServiceNow (Manual Approval)"
+                  message="Salesforce → MuleSoft (Validate) → ServiceNow (Approval)"
                   description={
                     <span>
-                      Account creation requests from Salesforce are <strong>validated</strong> by MuleSoft and sent to ServiceNow for <strong>manual approval</strong>.
-                      MuleSoft does NOT auto-approve accounts. An admin must approve each request in ServiceNow before the account is created.
-                      Click <strong>"Validate & Send to ServiceNow"</strong> to validate pending requests and create approval tickets.
+                      Account creation requests from Salesforce are <strong>validated</strong> by MuleSoft and sent to ServiceNow for <strong>approval</strong>.
+                      For each request:
+                      <br />1. Click <strong>"Validate"</strong> to validate the request
+                      <br />2. If valid, click <strong>"ServiceNow"</strong> to send for approval
+                      <br />Expand a row to see validation status and any errors.
                     </span>
                   }
                   type="info"
@@ -981,108 +1201,17 @@ export default function Events() {
                   />
                 )}
 
-                {/* Orchestration Result */}
-                {orchestrationResult && (
-                  <Card
-                    size="small"
-                    style={{ marginBottom: 16, borderRadius: 12, borderColor: orchestrationResult.status === 'success' ? '#b7eb8f' : '#ffa39e' }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                      <Space>
-                        <ThunderboltOutlined style={{ color: orchestrationResult.total_sent_to_servicenow > 0 ? '#52c41a' : '#faad14', fontSize: 18 }} />
-                        <Text strong style={{ fontSize: 15 }}>Validation & Routing Result</Text>
-                      </Space>
-                      <Button size="small" type="text" onClick={() => setOrchestrationResult(null)}>Dismiss</Button>
-                    </div>
-
-                    {orchestrationResult.status === 'error' ? (
-                      <Alert type="error" message={orchestrationResult.message} showIcon />
-                    ) : (
-                      <>
-                        <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-                          <Card size="small" style={{ flex: 1, textAlign: 'center', borderRadius: 8 }}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>Fetched</Text>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#1890ff' }}>{orchestrationResult.total_fetched}</div>
-                          </Card>
-                          <Card size="small" style={{ flex: 1, textAlign: 'center', borderRadius: 8 }}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>Passed Validation</Text>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#52c41a' }}>{orchestrationResult.total_valid}</div>
-                          </Card>
-                          <Card size="small" style={{ flex: 1, textAlign: 'center', borderRadius: 8 }}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>Failed Validation</Text>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#ff4d4f' }}>{orchestrationResult.total_invalid || 0}</div>
-                          </Card>
-                          <Card size="small" style={{ flex: 1, textAlign: 'center', borderRadius: 8 }}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>Sent to ServiceNow</Text>
-                            <div style={{ fontSize: 24, fontWeight: 700, color: '#722ed1' }}>{orchestrationResult.total_sent_to_servicenow || 0}</div>
-                          </Card>
-                        </div>
-
-                        {orchestrationResult.processed_requests?.map((req, idx) => {
-                          const isValid = req.outcome === 'SENT_TO_SERVICENOW';
-                          const isFailed = req.outcome === 'VALIDATION_FAILED';
-                          const bgColor = isValid ? '#f6ffed' : isFailed ? '#fff1f0' : '#fff7e6';
-                          const borderColor = isValid ? '#b7eb8f' : isFailed ? '#ffa39e' : '#ffd591';
-                          const icon = isValid ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> :
-                                       isFailed ? <WarningOutlined style={{ color: '#ff4d4f' }} /> :
-                                       <ExclamationCircleOutlined style={{ color: '#faad14' }} />;
-                          const tagColor = isValid ? 'green' : isFailed ? 'red' : 'orange';
-
-                          return (
-                            <div key={idx} style={{ padding: 12, marginBottom: 8, borderRadius: 8, background: bgColor, border: `1px solid ${borderColor}` }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <Space>
-                                  {icon}
-                                  <Text strong>{req.account_name}</Text>
-                                  <Text type="secondary">(Request #{req.request_id})</Text>
-                                </Space>
-                                <Tag color={tagColor} style={{ borderRadius: 12 }}>{req.outcome}</Tag>
-                              </div>
-
-                              {/* Validation errors */}
-                              {req.steps?.validation?.errors?.length > 0 && (
-                                <div style={{ marginTop: 8, marginLeft: 22 }}>
-                                  {req.steps.validation.errors.map((err, i) => (
-                                    <div key={i} style={{ color: '#ff4d4f', fontSize: 12 }}>
-                                      <WarningOutlined style={{ marginRight: 4 }} /> {err}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-
-                              {/* Validation warnings */}
-                              {req.steps?.validation?.warnings?.length > 0 && (
-                                <div style={{ marginTop: 4, marginLeft: 22 }}>
-                                  {req.steps.validation.warnings.map((w, i) => (
-                                    <div key={i} style={{ color: '#faad14', fontSize: 12 }}>
-                                      <ExclamationCircleOutlined style={{ marginRight: 4 }} /> {w}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-
-                              {/* ServiceNow ticket info */}
-                              {req.steps?.servicenow_ticket?.ticket_number && (
-                                <div style={{ marginTop: 6, marginLeft: 22 }}>
-                                  <Text type="secondary" style={{ fontSize: 12 }}>
-                                    ServiceNow Ticket: <Tag color="purple" style={{ borderRadius: 8 }}>{req.steps.servicenow_ticket.ticket_number}</Tag>
-                                    <Tag color="orange" style={{ borderRadius: 8 }}>Awaiting Manual Approval</Tag>
-                                  </Text>
-                                </div>
-                              )}
-
-                              {/* Note about manual approval */}
-                              {req.note && (
-                                <div style={{ marginTop: 6, marginLeft: 22 }}>
-                                  <Text type="secondary" style={{ fontSize: 11, fontStyle: 'italic' }}>{req.note}</Text>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </>
-                    )}
-                  </Card>
+                {/* Orchestration Result - Only show summary, individual errors shown in accordion */}
+                {orchestrationResult && orchestrationResult.status === 'error' && (
+                  <Alert
+                    type="error"
+                    message="Orchestration Error"
+                    description={orchestrationResult.message}
+                    showIcon
+                    closable
+                    onClose={() => setOrchestrationResult(null)}
+                    style={{ marginBottom: 16, borderRadius: 8 }}
+                  />
                 )}
 
                 <Card
@@ -1100,20 +1229,15 @@ export default function Events() {
                         )}
                       </Space>
                       <Space>
-                        <Tooltip title="Fetch PENDING requests from Salesforce, validate, create ServiceNow tickets, and accept accounts">
+                        <Tooltip title="Process all pending requests at once - validates and sends all to ServiceNow">
                           <Button
                             icon={<ThunderboltOutlined />}
                             onClick={runOrchestration}
                             loading={orchestrating}
                             disabled={accountRequests.filter(r => r.status === 'PENDING').length === 0 && !orchestrating}
-                            style={{
-                              borderRadius: 8,
-                              background: '#722ed1',
-                              borderColor: '#722ed1',
-                              color: '#fff'
-                            }}
+                            style={{ borderRadius: 8 }}
                           >
-                            {orchestrating ? 'Validating...' : 'Validate & Send to ServiceNow'}
+                            {orchestrating ? 'Processing...' : 'Process All Pending'}
                           </Button>
                         </Tooltip>
                         <Button icon={<ReloadOutlined />} onClick={fetchAccountRequests} loading={accountLoading} type="primary" style={{ borderRadius: 8 }}>
@@ -1135,16 +1259,211 @@ export default function Events() {
                       dataSource={accountRequests.map((req, idx) => ({ ...req, key: `req-${idx}` }))}
                       columns={accountColumns}
                       expandable={{
-                        expandedRowRender: (record) => (
-                          <div style={{ padding: '12px 24px', background: '#fafafa' }}>
-                            <JsonDisplay data={record} title={`Account Request #${record.id} - ${record.name}`} />
-                          </div>
-                        ),
+                        expandedRowRender: (record) => {
+                          const reqState = requestStates[record.id] || {};
+                          const validationResult = reqState.validationResult;
+                          const sendResult = reqState.sendResult;
+
+                          return (
+                            <div style={{ padding: '12px 24px', background: '#fafafa' }}>
+                              {/* Validation & Integration Status Section */}
+                              <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                                {/* Validation Status */}
+                                <Card
+                                  size="small"
+                                  title={<Space><FileProtectOutlined /> Validation Status</Space>}
+                                  style={{
+                                    flex: 1,
+                                    borderRadius: 8,
+                                    borderColor: validationResult?.valid ? '#b7eb8f' : validationResult ? '#ffa39e' : '#d9d9d9'
+                                  }}
+                                >
+                                  {!validationResult ? (
+                                    <Text type="secondary">Not validated yet. Click "Validate" button to check.</Text>
+                                  ) : validationResult.valid ? (
+                                    <Alert
+                                      type="success"
+                                      showIcon
+                                      message="Validation Passed"
+                                      description={
+                                        <div>
+                                          <Text>Request is valid and ready to send to ServiceNow.</Text>
+                                          {validationResult.warnings?.length > 0 && (
+                                            <div style={{ marginTop: 8 }}>
+                                              {validationResult.warnings.map((w, i) => (
+                                                <div key={i} style={{ color: '#faad14', fontSize: 12 }}>
+                                                  <ExclamationCircleOutlined style={{ marginRight: 4 }} /> {w}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      }
+                                      style={{ borderRadius: 6 }}
+                                    />
+                                  ) : (
+                                    <Alert
+                                      type="error"
+                                      showIcon
+                                      message="Validation Failed"
+                                      description={
+                                        <div>
+                                          {validationResult.errors?.map((err, i) => (
+                                            <div key={i} style={{ color: '#ff4d4f', fontSize: 12, marginBottom: 4 }}>
+                                              <WarningOutlined style={{ marginRight: 4 }} /> {err}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      }
+                                      style={{ borderRadius: 6 }}
+                                    />
+                                  )}
+                                </Card>
+
+                                {/* ServiceNow Send Status */}
+                                {(() => {
+                                  const ticketId = sendResult?.ticket_number || record.servicenow_ticket_id;
+                                  const ticketStatus = reqState.ticketStatus?.status || record.servicenow_status;
+                                  const isApproved = ticketStatus === 'approved' || ticketStatus === 'APPROVED';
+                                  const isRejected = ticketStatus === 'rejected' || ticketStatus === 'REJECTED';
+                                  const isPending = ticketStatus === 'pending_approval' || ticketStatus === 'REQUESTED' || ticketStatus === 'pending';
+
+                                  return (
+                                    <Card
+                                      size="small"
+                                      title={
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                          <Space><SendOutlined /> ServiceNow Status</Space>
+                                          {ticketId && (
+                                            <Button
+                                              size="small"
+                                              icon={<SyncOutlined spin={reqState.checkingStatus} />}
+                                              loading={reqState.checkingStatus}
+                                              onClick={(e) => { e.stopPropagation(); checkServiceNowStatus(record); }}
+                                              style={{ borderRadius: 6 }}
+                                            >
+                                              Check Status
+                                            </Button>
+                                          )}
+                                        </div>
+                                      }
+                                      style={{
+                                        flex: 1,
+                                        borderRadius: 8,
+                                        borderColor: isApproved ? '#b7eb8f' : isRejected ? '#ffa39e' : ticketId ? '#d3adf7' : '#d9d9d9'
+                                      }}
+                                    >
+                                      {!sendResult && !ticketId ? (
+                                        <Text type="secondary">Not sent yet. Validate first, then click "ServiceNow" button.</Text>
+                                      ) : isApproved ? (
+                                        <Alert
+                                          type="success"
+                                          showIcon
+                                          icon={<CheckCircleOutlined />}
+                                          message="APPROVED"
+                                          description={
+                                            <div>
+                                              <div style={{ marginBottom: 8 }}>
+                                                ServiceNow Ticket: <Tag color="purple" style={{ borderRadius: 8 }}>{ticketId}</Tag>
+                                              </div>
+                                              <Tag color="green" icon={<CheckCircleOutlined />} style={{ borderRadius: 8, fontWeight: 600 }}>Approved by ServiceNow</Tag>
+                                              {record.created_account_id && (
+                                                <div style={{ marginTop: 8 }}>
+                                                  <Tag color="green" icon={<CheckCircleOutlined />} style={{ borderRadius: 8 }}>Account #{record.created_account_id} Created</Tag>
+                                                </div>
+                                              )}
+                                              <div style={{ marginTop: 8, fontSize: 11, color: '#52c41a', fontStyle: 'italic' }}>
+                                                Request has been approved in ServiceNow. Account creation completed.
+                                              </div>
+                                            </div>
+                                          }
+                                          style={{ borderRadius: 6, background: '#f6ffed', borderColor: '#b7eb8f' }}
+                                        />
+                                      ) : isRejected ? (
+                                        <Alert
+                                          type="error"
+                                          showIcon
+                                          icon={<CloseCircleOutlined />}
+                                          message="REJECTED"
+                                          description={
+                                            <div>
+                                              <div style={{ marginBottom: 8 }}>
+                                                ServiceNow Ticket: <Tag color="purple" style={{ borderRadius: 8 }}>{ticketId}</Tag>
+                                              </div>
+                                              <Tag color="red" icon={<CloseCircleOutlined />} style={{ borderRadius: 8, fontWeight: 600 }}>Rejected by ServiceNow</Tag>
+                                              {reqState.ticketStatus?.rejection_reason && (
+                                                <div style={{ marginTop: 8, color: '#ff4d4f', fontSize: 12 }}>
+                                                  <strong>Reason:</strong> {reqState.ticketStatus.rejection_reason}
+                                                </div>
+                                              )}
+                                              <div style={{ marginTop: 8, fontSize: 11, color: '#ff4d4f', fontStyle: 'italic' }}>
+                                                Request was rejected in ServiceNow. Account will NOT be created.
+                                              </div>
+                                            </div>
+                                          }
+                                          style={{ borderRadius: 6, background: '#fff1f0', borderColor: '#ffa39e' }}
+                                        />
+                                      ) : ticketId ? (
+                                        <Alert
+                                          type="info"
+                                          showIcon
+                                          icon={<ClockCircleOutlined />}
+                                          message="Sent to ServiceNow"
+                                          description={
+                                            <div>
+                                              <div style={{ marginBottom: 8 }}>
+                                                ServiceNow Ticket: <Tag color="purple" style={{ borderRadius: 8 }}>{ticketId}</Tag>
+                                              </div>
+                                              <Tag color="orange" icon={<ClockCircleOutlined />} style={{ borderRadius: 8 }}>Awaiting Approval</Tag>
+                                              <div style={{ marginTop: 8, fontSize: 11, color: '#8c8c8c', fontStyle: 'italic' }}>
+                                                Request validated and sent to ServiceNow. Account will NOT be created until approved.
+                                                <br />Click "Check Status" to get the latest approval status.
+                                              </div>
+                                            </div>
+                                          }
+                                          style={{ borderRadius: 6 }}
+                                        />
+                                      ) : (
+                                        <Alert
+                                          type="error"
+                                          showIcon
+                                          message="Failed to Send"
+                                          description={
+                                            <div>
+                                              <div style={{ color: '#ff4d4f', fontSize: 12 }}>
+                                                <WarningOutlined style={{ marginRight: 4 }} /> {sendResult?.error || 'Unknown error'}
+                                              </div>
+                                            </div>
+                                          }
+                                          style={{ borderRadius: 6 }}
+                                        />
+                                      )}
+                                    </Card>
+                                  );
+                                })()}
+                              </div>
+
+                              {/* Show integration error from record if exists */}
+                              {record.integration_status === 'FAILED' && record.integration_error && (
+                                <Alert
+                                  type="error"
+                                  showIcon
+                                  message="Previous Integration Failed"
+                                  description={record.integration_error}
+                                  style={{ marginBottom: 16, borderRadius: 8 }}
+                                />
+                              )}
+
+                              {/* JSON Payload */}
+                              <JsonDisplay data={record} title={`Account Request #${record.id} - ${record.name}`} />
+                            </div>
+                          );
+                        },
                         expandRowByClick: true
                       }}
                       pagination={{ pageSize: 10, showTotal: (total, range) => `${range[0]}-${range[1]} of ${total} requests` }}
                       size="middle"
-                      scroll={{ x: 1200 }}
+                      scroll={{ x: 1500 }}
                       style={{ background: '#ffffff', borderRadius: 8 }}
                     />
                   ) : (
