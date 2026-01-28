@@ -60,7 +60,7 @@ def seed_database():
         type=ConnectorType.SALESFORCE,
         description="Remote Salesforce backend application connector - User Account Creation Requests",
         config={
-            "server_url": "https://149.102.158.71:4799"
+            "server_url": "http://salesforce-backend:8000"
         },
         status=ConnectorStatus.ACTIVE,
         owner_id=admin.id,
@@ -90,7 +90,7 @@ def seed_database():
         type=ConnectorType.SERVICENOW,
         description="Remote ServiceNow ITSM application for tickets and approvals",
         config={
-            "server_url": "http://149.102.158.71:4780"
+            "server_url": "http://servicenow-backend:4780"
         },
         status=ConnectorStatus.ACTIVE,
         owner_id=admin.id,
@@ -131,9 +131,9 @@ def seed_database():
     print("  2. Salesforce Case to SAP Service Request - DRAFT (with transform)")
     print("  3. Salesforce to ServiceNow - User Account Requests - DEPLOYED")
     print("\nConnectors Created:")
-    print("  1. Salesforce App (https://149.102.158.71:4799) - ACTIVE")
+    print("  1. Salesforce App (http://salesforce-backend:8000) - ACTIVE")
     print("  2. SAP ERP System (server_url configured) - ACTIVE")
-    print("  3. ServiceNow ITSM (http://149.102.158.71:4780) - ACTIVE")
+    print("  3. ServiceNow ITSM (http://servicenow-backend:4780) - ACTIVE")
     print("\nServiceNow Integration Endpoints:")
     print("  POST /api/servicenow/send-ticket - Send ticket to ServiceNow")
     print("  POST /api/servicenow/send-approval - Send approval to ServiceNow")

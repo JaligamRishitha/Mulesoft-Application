@@ -18,7 +18,7 @@ from app.auth import get_current_user
 router = APIRouter(prefix="/servicenow", tags=["ServiceNow Integration"])
 
 # ServiceNow Configuration - will be overridden by connector config
-SERVICENOW_BASE_URL = "http://149.102.158.71:4780"
+SERVICENOW_BASE_URL = "http://servicenow-backend:4780"
 SERVICENOW_ENDPOINTS = {
     "incidents": "/api/incidents",
     "tickets": "/api/tickets",
@@ -512,3 +512,172 @@ async def preview_servicenow_approval(
         "target_endpoint": f"{SERVICENOW_BASE_URL}{SERVICENOW_ENDPOINTS['approvals']}",
         "content_type": "application/json"
     }
+
+
+async def authenticate_with_servicenow(server_url: str, email: str = "admin@company.com", password: str = "admin123") -> str:
+    """Authenticate with the external ServiceNow application and return a bearer token"""
+    async with httpx.AsyncClient(verify=False) as client:
+        response = await client.post(
+            f"{server_url}/token",
+            data={"username": email, "password": password},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("access_token", "")
+        raise Exception(f"Failed to authenticate with ServiceNow app: HTTP {response.status_code}")
+
+
+@router.get("/ticket-status/{ticket_id}")
+async def get_servicenow_ticket_status(
+    ticket_id: str,
+    connector_id: Optional[int] = Query(None, description="Salesforce connector ID to update status"),
+    request_id: Optional[int] = Query(None, description="Salesforce request ID to update"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Get the current status of a ServiceNow ticket.
+    Returns the approval status (approved/rejected/pending).
+    If connector_id and request_id are provided, also updates the Salesforce request.
+    """
+    base_url = get_servicenow_base_url(db)
+
+    try:
+        # Authenticate with ServiceNow
+        sn_token = await authenticate_with_servicenow(base_url)
+
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            # Try to get ticket by ticket_number or id
+            # First, try to search by ticket_number
+            endpoints_to_try = [
+                f"{base_url}/tickets/by-number/{ticket_id}",
+                f"{base_url}/tickets/{ticket_id}",
+                f"{base_url}/api/tickets/{ticket_id}",
+            ]
+
+            for endpoint in endpoints_to_try:
+                try:
+                    response = await client.get(
+                        endpoint,
+                        headers={"Authorization": f"Bearer {sn_token}"}
+                    )
+                    if response.status_code == 200:
+                        ticket_data = response.json()
+
+                        # Extract status - normalize different status field names
+                        status = ticket_data.get("status", ticket_data.get("state", ticket_data.get("approval_status", "unknown")))
+
+                        # Normalize status values
+                        status_lower = str(status).lower()
+                        if status_lower in ["approved", "resolved", "closed", "completed"]:
+                            normalized_status = "approved"
+                        elif status_lower in ["rejected", "cancelled", "denied"]:
+                            normalized_status = "rejected"
+                        elif status_lower in ["pending", "pending_approval", "requested", "open", "new", "in_progress"]:
+                            normalized_status = "pending_approval"
+                        else:
+                            normalized_status = status_lower
+
+                        # Update Salesforce if connector_id and request_id provided
+                        sf_updated = False
+                        if connector_id and request_id:
+                            try:
+                                sf_connector = db.query(Connector).filter(
+                                    Connector.id == connector_id,
+                                    Connector.connector_type == "servicenow"
+                                ).first() or db.query(Connector).filter(
+                                    Connector.id == connector_id
+                                ).first()
+
+                                # Get Salesforce connector
+                                sf_conn = db.query(Connector).filter(
+                                    Connector.connector_type == "salesforce"
+                                ).first()
+
+                                if sf_conn:
+                                    sf_url = (sf_conn.connection_config or {}).get("server_url", "").rstrip("/")
+                                    if sf_url:
+                                        # Authenticate with Salesforce
+                                        sf_auth_response = await client.post(
+                                            f"{sf_url}/api/auth/login",
+                                            json={"username": "admin", "password": "admin123"},
+                                            timeout=10
+                                        )
+                                        if sf_auth_response.status_code == 200:
+                                            sf_token = sf_auth_response.json().get("access_token", "")
+
+                                            # Map ServiceNow status to Salesforce integration_status
+                                            sf_integration_status = {
+                                                "approved": "APPROVED",
+                                                "rejected": "REJECTED",
+                                                "pending_approval": "PENDING_APPROVAL"
+                                            }.get(normalized_status, "PENDING_APPROVAL")
+
+                                            # Update Salesforce request
+                                            update_payload = {
+                                                "integration_status": sf_integration_status,
+                                                "servicenow_status": normalized_status.upper()
+                                            }
+
+                                            # If approved, also update the main status
+                                            if normalized_status == "approved":
+                                                update_payload["status"] = "COMPLETED"
+                                            elif normalized_status == "rejected":
+                                                update_payload["status"] = "REJECTED"
+
+                                            sf_update = await client.put(
+                                                f"{sf_url}/api/accounts/requests/{request_id}",
+                                                headers={
+                                                    "Authorization": f"Bearer {sf_token}",
+                                                    "Content-Type": "application/json"
+                                                },
+                                                json=update_payload
+                                            )
+                                            sf_updated = sf_update.status_code in [200, 201]
+                            except Exception as sf_err:
+                                print(f"Warning: Could not update Salesforce: {sf_err}")
+
+                        # Log the status check
+                        log = IntegrationLog(
+                            integration_id=1,
+                            level="INFO",
+                            message=f"Checked ServiceNow ticket {ticket_id} status: {normalized_status}, SF updated: {sf_updated}"
+                        )
+                        db.add(log)
+                        db.commit()
+
+                        return {
+                            "ticket_id": ticket_id,
+                            "status": normalized_status,
+                            "raw_status": status,
+                            "ticket_data": ticket_data,
+                            "approval_status": ticket_data.get("approval_status"),
+                            "rejection_reason": ticket_data.get("rejection_reason", ticket_data.get("close_notes")),
+                            "approved_by": ticket_data.get("approved_by", ticket_data.get("closed_by")),
+                            "approved_at": ticket_data.get("approved_at", ticket_data.get("closed_at", ticket_data.get("resolved_at"))),
+                            "updated_at": ticket_data.get("updated_at"),
+                            "salesforce_updated": sf_updated,
+                            "timestamp": datetime.utcnow().isoformat() + "Z"
+                        }
+                except Exception as e:
+                    print(f"Failed to fetch from {endpoint}: {e}")
+                    continue
+
+            # If we couldn't find the ticket, return unknown status
+            return {
+                "ticket_id": ticket_id,
+                "status": "unknown",
+                "error": f"Could not find ticket {ticket_id} in ServiceNow",
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
+
+    except Exception as e:
+        return {
+            "ticket_id": ticket_id,
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+

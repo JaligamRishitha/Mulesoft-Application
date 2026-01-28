@@ -541,20 +541,137 @@ def validate_account_request(request: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-@router.post("/orchestrate/account-requests")
-async def orchestrate_account_requests(
+class SingleRequestPayload(BaseModel):
+    request_id: int
+    account_name: str
+
+
+class SingleRequestWithData(BaseModel):
+    request_id: int
+    account_name: str
+    request_data: Optional[Dict[str, Any]] = None
+
+
+@router.post("/validate-single-request")
+async def validate_single_request_endpoint(
+    payload: SingleRequestPayload,
     connector_id: int = Query(..., description="Salesforce connector ID"),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
     """
-    Orchestration flow for account creation requests:
-    1. Fetch PENDING account requests from Salesforce
-    2. Validate each request thoroughly
-    3. For valid requests, create a ServiceNow ticket + approval for manual review
-    4. Requests stay PENDING in Salesforce until manually approved in ServiceNow
+    Validate a single account creation request.
+    Returns validation result with any errors or warnings.
+    """
+    # Get Salesforce connector
+    sf_connector = db.query(Connector).filter(
+        Connector.id == connector_id,
+        Connector.connector_type == "salesforce"
+    ).first()
+    if not sf_connector:
+        raise HTTPException(status_code=404, detail="Salesforce connector not found")
 
-    NOTE: MuleSoft does NOT auto-approve accounts. Approval happens manually in ServiceNow.
+    sf_url = (sf_connector.connection_config or {}).get("server_url", "").rstrip("/")
+    if not sf_url:
+        raise HTTPException(status_code=400, detail="Salesforce server URL is not configured")
+
+    async with httpx.AsyncClient(verify=False, timeout=30) as client:
+        try:
+            # Authenticate with Salesforce
+            sf_token = await authenticate_with_salesforce(sf_url)
+
+            # Fetch all requests and filter by ID (Salesforce doesn't have single request endpoint)
+            sf_response = await client.get(
+                f"{sf_url}/api/accounts/requests",
+                headers={"Authorization": f"Bearer {sf_token}"}
+            )
+
+            if sf_response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch requests from Salesforce: HTTP {sf_response.status_code}"
+                )
+
+            all_requests = sf_response.json()
+            items = all_requests.get("items", all_requests) if isinstance(all_requests, dict) else all_requests
+
+            # Find the specific request by ID
+            account_req = None
+            for req in items:
+                if req.get("id") == payload.request_id:
+                    account_req = req
+                    break
+
+            if not account_req:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Request with ID {payload.request_id} not found in Salesforce"
+                )
+
+            # Validate the request
+            validation = validate_account_request(account_req)
+
+            # Generate a MuleSoft transaction ID for tracking
+            import uuid
+            mulesoft_tx_id = f"MULE-{uuid.uuid4().hex[:12]}"
+
+            # Update integration status in Salesforce
+            new_status = "VALIDATED" if validation["valid"] else "VALIDATION_FAILED"
+            try:
+                update_response = await client.put(
+                    f"{sf_url}/api/accounts/requests/{payload.request_id}",
+                    headers={
+                        "Authorization": f"Bearer {sf_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "integration_status": new_status,
+                        "mulesoft_transaction_id": mulesoft_tx_id
+                    }
+                )
+                status_updated = update_response.status_code in [200, 201]
+            except Exception as e:
+                print(f"Warning: Could not update Salesforce request status: {e}")
+                status_updated = False
+
+            # Log validation
+            log = IntegrationLog(
+                integration_id=1,
+                level="INFO" if validation["valid"] else "WARNING",
+                message=(
+                    f"Single request validation {'PASSED' if validation['valid'] else 'FAILED'} - "
+                    f"Account: {account_req.get('name', 'N/A')}, "
+                    f"SF Request ID: {payload.request_id}, "
+                    f"TX ID: {mulesoft_tx_id}"
+                )
+            )
+            db.add(log)
+            db.commit()
+
+            return {
+                **validation,
+                "mulesoft_transaction_id": mulesoft_tx_id,
+                "integration_status": new_status,
+                "status_updated": status_updated,
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Validation error: {str(e)}")
+
+
+@router.post("/send-single-to-servicenow")
+async def send_single_to_servicenow_endpoint(
+    payload: SingleRequestWithData,
+    connector_id: int = Query(..., description="Salesforce connector ID"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Send a single validated account request to ServiceNow.
+    The request must have been validated first.
     """
     # Get Salesforce connector
     sf_connector = db.query(Connector).filter(
@@ -569,7 +686,7 @@ async def orchestrate_account_requests(
         raise HTTPException(status_code=400, detail="Salesforce server URL is not configured")
 
     # Get ServiceNow connector URL
-    sn_url = "http://149.102.158.71:4780"
+    sn_url = "http://servicenow-backend:4780"
     try:
         all_connectors = db.query(Connector).all()
         for c in all_connectors:
@@ -579,86 +696,61 @@ async def orchestrate_account_requests(
     except Exception:
         pass
 
-    results = {
-        "status": "success",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "salesforce_url": sf_url,
-        "servicenow_url": sn_url,
-        "total_fetched": 0,
-        "total_valid": 0,
-        "total_invalid": 0,
-        "total_sent_to_servicenow": 0,
-        "total_failed": 0,
-        "processed_requests": []
-    }
-
     async with httpx.AsyncClient(verify=False, timeout=30) as client:
-        # Step 1: Authenticate with Salesforce
         try:
+            # Authenticate with Salesforce
             sf_token = await authenticate_with_salesforce(sf_url)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Cannot authenticate with Salesforce: {str(e)}")
 
-        # Step 2: Fetch PENDING account requests
-        sf_response = await client.get(
-            f"{sf_url}/api/accounts/requests",
-            headers={"Authorization": f"Bearer {sf_token}"},
-            params={"status": "PENDING"}
-        )
-        if sf_response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to fetch account requests from Salesforce: HTTP {sf_response.status_code}"
+            # Fetch all requests and filter by ID (Salesforce doesn't have single request endpoint)
+            sf_response = await client.get(
+                f"{sf_url}/api/accounts/requests",
+                headers={"Authorization": f"Bearer {sf_token}"}
             )
 
-        pending_requests = sf_response.json().get("items", [])
-        results["total_fetched"] = len(pending_requests)
-
-        if not pending_requests:
-            results["message"] = "No pending account requests found in Salesforce"
-            return results
-
-        # Step 3: Authenticate with ServiceNow
-        try:
-            sn_token = await authenticate_with_servicenow(sn_url)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Cannot authenticate with ServiceNow: {str(e)}")
-
-        # Step 4: Validate and process each request
-        for account_req in pending_requests:
-            req_result = {
-                "request_id": account_req.get("id"),
-                "account_name": account_req.get("name"),
-                "correlation_id": account_req.get("correlation_id"),
-                "steps": {}
-            }
-
-            # Step 4a: Validate thoroughly
-            validation = validate_account_request(account_req)
-            req_result["steps"]["validation"] = validation
-
-            if not validation["valid"]:
-                req_result["outcome"] = "VALIDATION_FAILED"
-                req_result["reason"] = "; ".join(validation["errors"])
-                results["total_invalid"] += 1
-                results["processed_requests"].append(req_result)
-
-                log = IntegrationLog(
-                    integration_id=1,
-                    level="WARNING",
-                    message=(
-                        f"Account request validation FAILED - "
-                        f"Account: {account_req.get('name', 'N/A')}, "
-                        f"SF Request ID: {account_req.get('id')}, "
-                        f"Errors: {'; '.join(validation['errors'])}"
-                    )
+            if sf_response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch requests from Salesforce: HTTP {sf_response.status_code}"
                 )
-                db.add(log)
-                continue
 
-            results["total_valid"] += 1
+            all_requests = sf_response.json()
+            items = all_requests.get("items", all_requests) if isinstance(all_requests, dict) else all_requests
 
-            # Step 4b: Create ServiceNow ticket (pending_approval status)
+            # Find the specific request by ID
+            account_req = None
+            for req in items:
+                if req.get("id") == payload.request_id:
+                    account_req = req
+                    break
+
+            if not account_req:
+                return {
+                    "success": False,
+                    "error": f"Request with ID {payload.request_id} not found in Salesforce"
+                }
+
+            # Re-validate to ensure request hasn't changed
+            validation = validate_account_request(account_req)
+            if not validation["valid"]:
+                return {
+                    "success": False,
+                    "error": f"Request is no longer valid: {'; '.join(validation['errors'])}",
+                    "validation": validation
+                }
+
+            # Authenticate with ServiceNow
+            try:
+                sn_token = await authenticate_with_servicenow(sn_url)
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Cannot authenticate with ServiceNow: {str(e)}"
+                }
+
+            # Create ServiceNow ticket
+            import uuid
+            mulesoft_tx_id = f"MULE-{uuid.uuid4().hex[:12]}"
+
             sn_ticket_payload = {
                 "title": f"Account Creation Approval - {account_req['name']}",
                 "description": (
@@ -667,6 +759,7 @@ async def orchestrate_account_requests(
                     f"Requested By: User ID {account_req.get('requested_by_id')}\n"
                     f"Correlation ID: {account_req.get('correlation_id')}\n"
                     f"Salesforce Request ID: {account_req['id']}\n"
+                    f"MuleSoft Transaction ID: {mulesoft_tx_id}\n"
                     f"Created At: {account_req.get('created_at')}\n\n"
                     f"This request has been validated by MuleSoft Integration Platform.\n"
                     f"Please review and approve/reject this account creation in ServiceNow."
@@ -679,99 +772,98 @@ async def orchestrate_account_requests(
                 "business_justification": f"Salesforce account creation request for '{account_req['name']}' - requires manual approval"
             }
 
+            sn_response = await client.post(
+                f"{sn_url}/tickets/",
+                headers={
+                    "Authorization": f"Bearer {sn_token}",
+                    "Content-Type": "application/json"
+                },
+                json=sn_ticket_payload
+            )
+
+            if sn_response.status_code not in [200, 201]:
+                return {
+                    "success": False,
+                    "error": f"Failed to create ServiceNow ticket: HTTP {sn_response.status_code}",
+                    "detail": sn_response.text
+                }
+
+            sn_ticket_data = sn_response.json()
+            ticket_id = sn_ticket_data.get("id")
+            ticket_number = sn_ticket_data.get("ticket_number")
+
+            # Set ticket to pending_approval
+            if ticket_id:
+                try:
+                    await client.put(
+                        f"{sn_url}/tickets/{ticket_id}",
+                        headers={
+                            "Authorization": f"Bearer {sn_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={"status": "pending_approval"}
+                    )
+                except Exception:
+                    pass  # Non-critical
+
+            # Update the request in Salesforce with ServiceNow ticket info
             try:
-                sn_response = await client.post(
-                    f"{sn_url}/tickets/",
+                await client.put(
+                    f"{sf_url}/api/accounts/requests/{payload.request_id}",
                     headers={
-                        "Authorization": f"Bearer {sn_token}",
+                        "Authorization": f"Bearer {sf_token}",
                         "Content-Type": "application/json"
                     },
-                    json=sn_ticket_payload
+                    json={
+                        "servicenow_ticket_id": ticket_number or f"TKT{ticket_id}",
+                        "servicenow_status": "REQUESTED",
+                        "mulesoft_transaction_id": mulesoft_tx_id,
+                        "integration_status": "COMPLETED"
+                    }
                 )
-
-                if sn_response.status_code in [200, 201]:
-                    sn_ticket_data = sn_response.json()
-                    ticket_id = sn_ticket_data.get("id")
-                    ticket_number = sn_ticket_data.get("ticket_number")
-
-                    req_result["steps"]["servicenow_ticket"] = {
-                        "status": "created",
-                        "ticket_id": ticket_id,
-                        "ticket_number": ticket_number,
-                        "ticket_status": sn_ticket_data.get("status")
-                    }
-
-                    # Step 4c: Create a ServiceNow approval entry for this ticket
-                    approval_created = False
-                    if ticket_id:
-                        try:
-                            # Update ticket to pending_approval status
-                            await client.put(
-                                f"{sn_url}/tickets/{ticket_id}",
-                                headers={
-                                    "Authorization": f"Bearer {sn_token}",
-                                    "Content-Type": "application/json"
-                                },
-                                json={"status": "pending_approval"}
-                            )
-
-                            req_result["steps"]["servicenow_approval"] = {
-                                "status": "pending",
-                                "ticket_id": ticket_id,
-                                "message": "Ticket set to pending_approval - awaiting manual review in ServiceNow"
-                            }
-                            approval_created = True
-                        except Exception as e:
-                            req_result["steps"]["servicenow_approval"] = {
-                                "status": "warning",
-                                "error": f"Ticket created but could not set pending_approval: {str(e)}"
-                            }
-
-                    req_result["outcome"] = "SENT_TO_SERVICENOW"
-                    req_result["note"] = "Request validated and sent to ServiceNow for manual approval. Account will NOT be created until approved in ServiceNow."
-                    results["total_sent_to_servicenow"] += 1
-                else:
-                    req_result["steps"]["servicenow_ticket"] = {
-                        "status": "failed",
-                        "error": f"HTTP {sn_response.status_code}: {sn_response.text}"
-                    }
-                    req_result["outcome"] = "SERVICENOW_FAILED"
-                    req_result["reason"] = "Failed to create ServiceNow ticket"
-                    results["total_failed"] += 1
             except Exception as e:
-                req_result["steps"]["servicenow_ticket"] = {
-                    "status": "error",
-                    "error": str(e)
-                }
-                req_result["outcome"] = "SERVICENOW_FAILED"
-                req_result["reason"] = f"ServiceNow error: {str(e)}"
-                results["total_failed"] += 1
-
-            results["processed_requests"].append(req_result)
+                print(f"Warning: Could not update Salesforce request: {e}")
 
             # Log the integration
             log = IntegrationLog(
                 integration_id=1,
-                level="INFO" if req_result["outcome"] == "SENT_TO_SERVICENOW" else "ERROR",
+                level="INFO",
                 message=(
-                    f"Account request [{req_result['outcome']}] - "
+                    f"Single request sent to ServiceNow - "
                     f"Account: {account_req['name']}, "
-                    f"SF Request ID: {account_req['id']}, "
-                    f"SN Ticket: {req_result['steps'].get('servicenow_ticket', {}).get('ticket_number', 'N/A')}"
+                    f"SF Request ID: {payload.request_id}, "
+                    f"SN Ticket: {ticket_number}, "
+                    f"TX ID: {mulesoft_tx_id}"
                 )
             )
             db.add(log)
+            db.commit()
 
-        db.commit()
+            return {
+                "success": True,
+                "ticket_id": ticket_id,
+                "ticket_number": ticket_number,
+                "mulesoft_transaction_id": mulesoft_tx_id,
+                "message": "Request sent to ServiceNow for manual approval",
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
 
-    results["message"] = (
-        f"Processed {results['total_fetched']} requests: "
-        f"{results['total_valid']} valid, "
-        f"{results['total_invalid']} failed validation, "
-        f"{results['total_sent_to_servicenow']} sent to ServiceNow for approval, "
-        f"{results['total_failed']} failed"
-    )
-    return results
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Log the error
+            log = IntegrationLog(
+                integration_id=1,
+                level="ERROR",
+                message=f"Failed to send request to ServiceNow - Request ID: {payload.request_id}, Error: {str(e)}"
+            )
+            db.add(log)
+            db.commit()
+
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
 
 async def get_case_by_salesforce_id_platform_event_format(
