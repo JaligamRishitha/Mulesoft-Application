@@ -1,21 +1,20 @@
 import React, { useState } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Dropdown, Space, Avatar, Modal, Form, Input, message } from 'antd';
-import { 
-  DownOutlined, 
+import {
+  DownOutlined,
   UserOutlined,
   LogoutOutlined,
   DashboardOutlined,
-  ApiOutlined,
   LinkOutlined,
   EditOutlined,
   CodeOutlined,
   LineChartOutlined,
-  RocketOutlined,
-  SwapOutlined,
   SafetyOutlined,
-  MailOutlined,
-  KeyOutlined
+  KeyOutlined,
+  EyeOutlined,
+  ThunderboltOutlined,
+  MailOutlined
 } from '@ant-design/icons';
 import Dashboard from './pages/Dashboard';
 import Integrations from './pages/Integrations';
@@ -25,7 +24,6 @@ import Metrics from './pages/Metrics';
 import APIDesigner from './pages/APIDesigner';
 import SwaggerUI from './pages/SwaggerUI';
 import Connectors from './pages/Connectors';
-import Events from './pages/Events';
 import Login from './pages/Login';
 
 const { Header, Content } = Layout;
@@ -63,10 +61,9 @@ export default function App() {
 
   const integrationsMenu = {
     items: [
-      { key: '/integrations', icon: <SwapOutlined />, label: 'Integration Designer', description: 'Design and manage integrations' },
-      { key: '/runtime', icon: <RocketOutlined />, label: 'Runtime Manager', description: 'Deploy and monitor runtimes' },
+      { key: '/integrations', icon: <EyeOutlined />, label: 'Integration Designer', description: 'Preview Salesforce data & payloads' },
+      { key: '/runtime', icon: <ThunderboltOutlined />, label: 'Runtime Manager', description: 'Execute integrations to SAP/ServiceNow' },
       { key: '/connectors', icon: <LinkOutlined />, label: 'Connectors', description: 'Manage external connections' },
-      { key: '/events', icon: <MailOutlined />, label: 'Events', description: 'Live Salesforce cases and events' },
     ],
     onClick: ({ key }) => navigate(key)
   };
@@ -124,7 +121,7 @@ export default function App() {
 
   const getActiveMenu = () => {
     const path = location.pathname;
-    if (['/integrations', '/runtime', '/connectors', '/events'].includes(path)) return 'integrations';
+    if (['/integrations', '/runtime', '/connectors'].includes(path)) return 'integrations';
     if (['/apis', '/api-designer', '/api-explorer'].includes(path)) return 'apis';
     if (['/', '/metrics'].includes(path)) return 'monitoring';
     return '';
@@ -245,7 +242,7 @@ export default function App() {
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/runtime" element={<Runtime />} />
             <Route path="/connectors" element={<Connectors />} />
-            <Route path="/events" element={<Events />} />
+            <Route path="/events" element={<Navigate to="/runtime" replace />} />
             <Route path="/apis" element={<APIs />} />
             <Route path="/api-designer" element={<APIDesigner />} />
             <Route path="/api-explorer" element={<SwaggerUI />} />
