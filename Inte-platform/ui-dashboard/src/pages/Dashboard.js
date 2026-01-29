@@ -101,7 +101,7 @@ export default function Dashboard() {
     const fetchConnectors = async () => {
       try {
         const { data: connectors } = await api.get('/connectors/');
-        const connector = connectors.find(c => c.type === 'salesforce');
+        const connector = connectors.find(c => c.connector_type === 'salesforce');
         if (connector) setSfConnector(connector);
       } catch (e) {
         console.error('Error fetching connectors:', e);
