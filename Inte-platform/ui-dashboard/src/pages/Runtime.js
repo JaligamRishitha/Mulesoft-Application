@@ -104,7 +104,7 @@ export default function Runtime() {
     setSnowModal({ visible: true, caseData, loading: true, eventType: record.eventType });
     setSnowResult(null);
     const transformData = { id: caseData.id, caseId: caseData.id, caseNumber: caseData.caseNumber || `CASE-${caseData.id}`, subject: caseData.subject, description: caseData.description, status: caseData.status, priority: caseData.priority, account: caseData.account || { id: caseData.accountId, name: caseData.accountName }, contact: caseData.contact || { id: caseData.contactId, name: caseData.contactName }, userName: caseData.userName || '', userEmail: caseData.userEmail || '', userRole: caseData.userRole || 'Standard User', department: caseData.department || '', category: caseData.category || 'User Account', createdDate: caseData.createdDate || new Date().toISOString() };
-    try { const [ticketPreview, approvalPreview] = await Promise.all([api.post('/servicenow/preview-ticket', transformData, { params: { ticket_type: 'incident' } }), api.post('/servicenow/preview-approval', transformData, { params: { approval_type: 'user_account' } })]); setSnowPreview({ ticket: ticketPreview.data.ticket_payload, approval: approvalPreview.data.approval_payload }); } catch (err) { setSnowPreview({ ticket: null, approval: null }); }
+    try { const ticketPreview = await api.post('/servicenow/preview-ticket', transformData, { params: { ticket_type: 'incident' } }); setSnowPreview({ ticket: ticketPreview.data.ticket_payload, approval: null }); } catch (err) { setSnowPreview({ ticket: null, approval: null }); }
     setSnowModal(prev => ({ ...prev, loading: false }));
   };
 
@@ -112,7 +112,7 @@ export default function Runtime() {
     setSnowModal(prev => ({ ...prev, loading: true }));
     const caseData = snowModal.caseData;
     const transformData = { id: caseData.id, caseId: caseData.id, caseNumber: caseData.caseNumber || `CASE-${caseData.id}`, subject: caseData.subject, description: caseData.description, status: caseData.status, priority: caseData.priority, account: caseData.account || { id: caseData.accountId, name: caseData.accountName }, contact: caseData.contact || { id: caseData.contactId, name: caseData.contactName }, userName: caseData.userName || '', userEmail: caseData.userEmail || '', userRole: caseData.userRole || 'Standard User', department: caseData.department || '', category: caseData.category || 'User Account', createdDate: caseData.createdDate || new Date().toISOString() };
-    try { const response = await api.post('/servicenow/send-ticket-and-approval', transformData, { params: { ticket_type: 'incident', approval_type: 'user_account' } }); setSnowResult(response.data); if (response.data.ticket?.success || response.data.approval?.success) message.success('Data sent to ServiceNow successfully!'); else message.error('Failed to send to ServiceNow'); } catch (err) { setSnowResult({ ticket: { success: false, error: err.response?.data?.detail || err.message }, approval: { success: false, error: err.response?.data?.detail || err.message } }); message.error('Failed to send to ServiceNow'); }
+    try { const response = await api.post('/servicenow/send-ticket-only', transformData, { params: { ticket_type: 'incident' } }); setSnowResult(response.data); if (response.data.ticket?.success) message.success('Ticket created in ServiceNow successfully!'); else message.error('Failed to create ticket in ServiceNow'); } catch (err) { setSnowResult({ ticket: { success: false, error: err.response?.data?.detail || err.message }, approval: null }); message.error('Failed to send to ServiceNow'); }
     setSnowModal(prev => ({ ...prev, loading: false }));
   };
 
@@ -204,17 +204,27 @@ export default function Runtime() {
       const isValidatedOnServer = integrationStatus === 'PENDING_MULESOFT' || integrationStatus === 'PENDING_MULE';
       const isValidated = isValidatedLocally || isValidatedOnServer;
       const isPending = record.status === 'PENDING' || record.eventType === 'case';
-      const alreadySent = integrationStatus === 'COMPLETED' || integrationStatus === 'REQUESTED';
+      // Check if already deployed (any post-deployment state)
+      const isDeployed = integrationStatus === 'COMPLETED' || integrationStatus === 'APPROVED' || integrationStatus === 'SYNCED' || integrationStatus === 'REQUESTED';
       const deployMenuItems = { items: [{ key: 'sap', icon: <SendOutlined />, label: 'SAP', onClick: () => handleSendToSAP(record) }, { key: 'servicenow', icon: <SendOutlined />, label: 'ServiceNow', onClick: () => record.eventType === 'case' ? handleSendToServiceNow(record) : sendSingleToServiceNow(record) }] };
-      const isDeployDisabled = record.eventType === 'account' && (!isValidated || alreadySent || reqState.sending);
+      // Disable deploy if: not validated, already deployed, or currently sending
+      const isDeployDisabled = record.eventType === 'account' && (!isValidated || isDeployed || reqState.sending);
+
+      // After deployment, show just "Deployed" text - no buttons
+      if (isDeployed) {
+        return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 6, padding: '4px 12px', fontSize: 13 }}>Deployed</Tag>;
+      }
+
       return (
         <Space size="small">
-          <Tooltip title={record.eventType === 'case' ? 'Cases are pre-validated' : alreadySent ? 'Already sent' : isPending ? 'Validate this request' : 'Only pending requests can be validated'}>
-            <Button icon={<FileProtectOutlined />} size="small" loading={reqState.validating} disabled={record.eventType === 'case' || !isPending || alreadySent || reqState.validating} onClick={(e) => { e.stopPropagation(); validateSingleRequest(record); }} style={{ borderRadius: 6, background: (record.eventType === 'case' || isValidated) ? '#f6ffed' : undefined, borderColor: (record.eventType === 'case' || isValidated) ? '#b7eb8f' : undefined, color: (record.eventType === 'case' || isValidated) ? '#52c41a' : undefined }}>{record.eventType === 'case' || isValidated ? 'Validated' : 'Validate'}</Button>
+          {/* Show Validate button only for non-deployed items */}
+          <Tooltip title={record.eventType === 'case' ? 'Cases are pre-validated' : isPending ? 'Validate this request' : 'Only pending requests can be validated'}>
+            <Button icon={<FileProtectOutlined />} size="small" loading={reqState.validating} disabled={record.eventType === 'case' || !isPending || reqState.validating} onClick={(e) => { e.stopPropagation(); validateSingleRequest(record); }} style={{ borderRadius: 6, background: (record.eventType === 'case' || isValidated) ? '#f6ffed' : undefined, borderColor: (record.eventType === 'case' || isValidated) ? '#b7eb8f' : undefined, color: (record.eventType === 'case' || isValidated) ? '#52c41a' : undefined }}>{record.eventType === 'case' || isValidated ? 'Validated' : 'Validate'}</Button>
           </Tooltip>
+          {/* Show Deploy button */}
           <Dropdown menu={deployMenuItems} trigger={['click']} disabled={isDeployDisabled}>
             <Tooltip title={isDeployDisabled ? 'Validate first' : 'Deploy to target system'}>
-              <Button type="primary" icon={<RocketOutlined />} size="small" loading={reqState.sending} disabled={isDeployDisabled} onClick={(e) => e.stopPropagation()} style={{ borderRadius: 6, background: alreadySent ? '#f6ffed' : '#1890ff', borderColor: alreadySent ? '#b7eb8f' : '#1890ff', color: alreadySent ? '#52c41a' : '#fff' }}>{alreadySent ? 'Deployed' : 'Deploy'} <DownOutlined style={{ fontSize: 10, marginLeft: 4 }} /></Button>
+              <Button type="primary" icon={<RocketOutlined />} size="small" loading={reqState.sending} disabled={isDeployDisabled} onClick={(e) => e.stopPropagation()} style={{ borderRadius: 6 }}>Deploy <DownOutlined style={{ fontSize: 10, marginLeft: 4 }} /></Button>
             </Tooltip>
           </Dropdown>
         </Space>
@@ -286,13 +296,12 @@ export default function Runtime() {
         )}
       </Modal>
 
-      <Modal title={<Space><CloudUploadOutlined style={{ color: '#81B5A1' }} /><span>Send to ServiceNow</span></Space>} open={snowModal.visible} onCancel={() => { setSnowModal({ visible: false, caseData: null, loading: false }); setSnowResult(null); setSnowPreview({ ticket: null, approval: null }); }} width={900} footer={[<Button key="cancel" onClick={() => setSnowModal({ visible: false, caseData: null, loading: false })}>Cancel</Button>, <Button key="send" style={{ background: '#81B5A1', borderColor: '#81B5A1' }} type="primary" icon={<SendOutlined />} loading={snowModal.loading} onClick={executeSendTicketToServiceNow} disabled={snowResult?.ticket?.success && snowResult?.approval?.success}>{snowResult?.ticket?.success ? 'Sent Successfully' : 'Send Ticket & Approval'}</Button>]}>
+      <Modal title={<Space><CloudUploadOutlined style={{ color: '#81B5A1' }} /><span>Send Ticket to ServiceNow</span></Space>} open={snowModal.visible} onCancel={() => { setSnowModal({ visible: false, caseData: null, loading: false }); setSnowResult(null); setSnowPreview({ ticket: null, approval: null }); }} width={900} footer={[<Button key="cancel" onClick={() => setSnowModal({ visible: false, caseData: null, loading: false })}>Cancel</Button>, <Button key="send" style={{ background: '#81B5A1', borderColor: '#81B5A1' }} type="primary" icon={<SendOutlined />} loading={snowModal.loading} onClick={executeSendTicketToServiceNow} disabled={snowResult?.ticket?.success}>{snowResult?.ticket?.success ? 'Sent Successfully' : 'Send Ticket'}</Button>]}>
         {snowModal.caseData && (
           <Tabs defaultActiveKey="ticket-preview" items={[
             { key: 'ticket-preview', label: 'Ticket Preview', children: (<><div style={{ marginBottom: 16 }}><Text strong>Target: </Text><Text code>POST http://149.102.158.71:4780/api/tickets</Text></div><div style={{ marginBottom: 16 }}><Text strong>Source Case: </Text><Tag color="blue">{snowModal.caseData.id}</Tag><Text>{snowModal.caseData.subject}</Text></div>{snowModal.loading ? <div style={{ textAlign: 'center', padding: 40 }}><Spin /> Generating ticket preview...</div> : snowPreview.ticket ? <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: 350, fontSize: 12, fontFamily: 'Monaco, Menlo, monospace' }}>{JSON.stringify(snowPreview.ticket, null, 2)}</pre> : <Text type="secondary">Preview not available</Text>}</>) },
-            { key: 'approval-preview', label: 'Approval Preview', children: (<><div style={{ marginBottom: 16 }}><Text strong>Target: </Text><Text code>POST http://149.102.158.71:4780/api/approvals</Text></div><div style={{ marginBottom: 16 }}><Text strong>Approval Type: </Text><Tag color="green">User Account</Tag></div>{snowModal.loading ? <div style={{ textAlign: 'center', padding: 40 }}><Spin /> Generating approval preview...</div> : snowPreview.approval ? <pre style={{ background: '#1e1e1e', color: '#d4d4d4', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: 350, fontSize: 12, fontFamily: 'Monaco, Menlo, monospace' }}>{JSON.stringify(snowPreview.approval, null, 2)}</pre> : <Text type="secondary">Preview not available</Text>}</>) },
             { key: 'source', label: 'Source Data', children: <pre style={{ background: '#f6f8fa', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: 400, fontSize: 12 }}>{JSON.stringify(snowModal.caseData, null, 2)}</pre> },
-            ...(snowResult ? [{ key: 'response', label: 'ServiceNow Response', children: (<><div style={{ marginBottom: 16 }}><Text strong style={{ fontSize: 14 }}>Ticket Result:</Text><Alert message={snowResult.ticket?.success ? 'Ticket Created' : 'Ticket Failed'} description={snowResult.ticket?.success ? `Ticket ${snowResult.ticket.ticket_number || ''} created` : (snowResult.ticket?.error || 'Failed')} type={snowResult.ticket?.success ? 'success' : 'error'} showIcon style={{ marginTop: 8, marginBottom: 12 }} /></div><div><Text strong style={{ fontSize: 14 }}>Approval Result:</Text><Alert message={snowResult.approval?.success ? 'Approval Created' : 'Approval Failed'} description={snowResult.approval?.success ? `Approval ${snowResult.approval.approval_id || ''} created` : (snowResult.approval?.error || 'Failed')} type={snowResult.approval?.success ? 'success' : 'error'} showIcon style={{ marginTop: 8 }} /></div></>) }] : [])
+            ...(snowResult ? [{ key: 'response', label: 'ServiceNow Response', children: (<><div style={{ marginBottom: 16 }}><Text strong style={{ fontSize: 14 }}>Ticket Result:</Text><Alert message={snowResult.ticket?.success ? 'Ticket Created' : 'Ticket Failed'} description={snowResult.ticket?.success ? `Ticket ${snowResult.ticket.ticket_number || ''} created` : (snowResult.ticket?.error || 'Failed')} type={snowResult.ticket?.success ? 'success' : 'error'} showIcon style={{ marginTop: 8 }} /></div></>) }] : [])
           ]} />
         )}
       </Modal>

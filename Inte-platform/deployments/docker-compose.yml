@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Database
   postgres:
@@ -15,15 +13,21 @@ services:
     networks:
       - openpoint-network
 
+  # MCP Server (MuleSoft Integration API)
+  mcp-server:
+    build: ../mcp-server
+    ports:
+      - "8090:8090"
+    networks:
+      - openpoint-network
+
   # UI Dashboard
   ui-dashboard:
     build: ../ui-dashboard
     ports:
       - "3001:3000"
-    environment:
-      REACT_APP_API_URL: http://localhost:8085/api
     depends_on:
-      - platform-backend
+      - mcp-server
     networks:
       - openpoint-network
 

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
-from app.routers import auth, integrations, apis, dashboard, runtime, connectors, proxy, salesforce_cases, transform, sap_integration, servicenow_integration, webhooks
+from app.routers import auth, integrations, apis, dashboard, runtime, connectors, proxy, salesforce_cases, transform, sap_integration, servicenow_integration, webhooks, resilience
 from app.database import engine, Base
 
 Base.metadata.create_all(bind=engine)
@@ -39,6 +39,7 @@ app.include_router(transform.router, prefix="/api", tags=["Data Transformation"]
 app.include_router(sap_integration.router, prefix="/api", tags=["SAP Integration"])
 app.include_router(servicenow_integration.router, prefix="/api", tags=["ServiceNow Integration"])
 app.include_router(webhooks.router, prefix="/api", tags=["Webhooks"])
+app.include_router(resilience.router, prefix="/api", tags=["Enterprise Resilience"])
 
 @app.get("/health")
 def health_check():

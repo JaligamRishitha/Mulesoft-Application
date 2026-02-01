@@ -24,6 +24,7 @@ import Metrics from './pages/Metrics';
 import APIDesigner from './pages/APIDesigner';
 import SwaggerUI from './pages/SwaggerUI';
 import Connectors from './pages/Connectors';
+import ResilienceMonitor from './pages/ResilienceMonitor';
 import Login from './pages/Login';
 
 const { Header, Content } = Layout;
@@ -81,6 +82,7 @@ export default function App() {
     items: [
       { key: '/', icon: <DashboardOutlined />, label: 'Dashboard', description: 'Platform overview' },
       { key: '/metrics', icon: <LineChartOutlined />, label: 'Observability', description: 'Metrics and monitoring' },
+      { key: '/resilience', icon: <SafetyOutlined />, label: 'Resilience', description: 'Circuit breaker & DLQ monitoring' },
     ],
     onClick: ({ key }) => navigate(key)
   };
@@ -247,6 +249,7 @@ export default function App() {
             <Route path="/api-designer" element={<APIDesigner />} />
             <Route path="/api-explorer" element={<SwaggerUI />} />
             <Route path="/metrics" element={<Metrics />} />
+            <Route path="/resilience" element={<ResilienceMonitor />} />
           </Routes>
         </div>
       </Content>

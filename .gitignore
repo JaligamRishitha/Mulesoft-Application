@@ -1,0 +1,38 @@
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+mcp_venv/
+**/venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+
+# Node modules (if applicable)
+node_modules/
+
+# Database files
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -134,27 +134,29 @@ export const RequestStatus = ({ status }) => {
 };
 
 // Integration status tag with ServiceNow status handling
+// Shows only: PENDING, VALIDATED, COMPLETED
 export const IntegrationStatusTag = ({ status, servicenowStatus }) => {
-  // Check ServiceNow status for approved/rejected
+  // Check ServiceNow status for approved/rejected - both map to COMPLETED
   const snStatus = servicenowStatus?.toLowerCase();
-  if (snStatus === 'approved') {
-    return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, fontWeight: 600 }}>APPROVED</Tag>;
-  }
-  if (snStatus === 'rejected') {
-    return <Tag icon={<CloseCircleOutlined />} color="error" style={{ borderRadius: 12, fontWeight: 600 }}>REJECTED</Tag>;
+  if (snStatus === 'approved' || snStatus === 'rejected') {
+    return <Tag icon={<CheckCircleOutlined />} color="success" style={{ borderRadius: 12, fontWeight: 600 }}>COMPLETED</Tag>;
   }
 
   const upperStatus = status?.toUpperCase() || '';
+
+  // Map all statuses to only: PENDING, VALIDATED, COMPLETED
   const config = {
-    'COMPLETED': { color: 'green', icon: <CheckCircleOutlined /> },
-    'FAILED': { color: 'red', icon: <CloseCircleOutlined /> },
-    'REQUESTED': { color: 'blue', icon: <ClockCircleOutlined />, label: 'AWAITING APPROVAL' },
+    'COMPLETED': { color: 'green', icon: <CheckCircleOutlined />, label: 'COMPLETED' },
+    'APPROVED': { color: 'green', icon: <CheckCircleOutlined />, label: 'COMPLETED' },
+    'SYNCED': { color: 'green', icon: <CheckCircleOutlined />, label: 'COMPLETED' },
+    'REQUESTED': { color: 'green', icon: <CheckCircleOutlined />, label: 'COMPLETED' },
+    'FAILED': { color: 'red', icon: <CloseCircleOutlined />, label: 'FAILED' },
     'PENDING': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING' },
-    'PENDING_MULE': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING VALIDATION' },
-    'PENDING_MULESOFT': { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING VALIDATION' }
+    'PENDING_MULE': { color: 'blue', icon: <CheckCircleOutlined />, label: 'VALIDATED' },
+    'PENDING_MULESOFT': { color: 'blue', icon: <CheckCircleOutlined />, label: 'VALIDATED' }
   };
-  const c = config[upperStatus] || { color: 'default', icon: null };
-  return <Tag icon={c.icon} color={c.color} style={{ borderRadius: 12 }}>{c.label || status || 'N/A'}</Tag>;
+  const c = config[upperStatus] || { color: 'orange', icon: <ClockCircleOutlined />, label: 'PENDING' };
+  return <Tag icon={c.icon} color={c.color} style={{ borderRadius: 12 }}>{c.label}</Tag>;
 };
 
 // Helper to build the full payload for case expanded view

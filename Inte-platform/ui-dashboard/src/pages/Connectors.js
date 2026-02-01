@@ -145,10 +145,21 @@ export default function Connectors() {
     setLoading(false);
   };
 
+  const defaultConfigSchema = {
+    server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' }
+  };
+
   const fetchConnectorTypes = async () => {
     try {
       const { data } = await api.get('/connectors/types');
-      setConnectorTypes(data);
+      // Convert array to object keyed by type and add default config_schema
+      const typesObj = Array.isArray(data)
+        ? data.reduce((acc, item) => ({
+            ...acc,
+            [item.type]: { ...item, config_schema: item.config_schema || defaultConfigSchema }
+          }), {})
+        : data;
+      setConnectorTypes(typesObj);
     } catch (err) {
       setConnectorTypes({
         sap: { name: 'SAP', description: 'Connect to remote SAP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
@@ -174,17 +185,21 @@ export default function Connectors() {
   };
 
   const handleEdit = (record) => {
-    setSelectedType(record.type);
+    setSelectedType(record.connector_type || record.type);
     setEditingConnector(record);
-    form.setFieldsValue({ name: record.name, description: record.description, ...record.config });
+    form.setFieldsValue({ name: record.name, description: record.description, ...record.connection_config, ...record.config });
     setModalVisible(true);
   };
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      const { name, description, ...config } = values;
-      const payload = { name, description, type: selectedType, config };
+      const { name, description, ...connection_config } = values;
+      const payload = { 
+        name, 
+        connector_type: selectedType, 
+        connection_config 
+      };
       
       if (editingConnector) {
         await api.put(`/connectors/${editingConnector.id}`, payload);
@@ -197,7 +212,8 @@ export default function Connectors() {
       fetchConnectors();
     } catch (err) {
       if (err.errorFields) return;
-      message.error('Failed to save connector');
+      console.error('Connector save error:', err.response?.data);
+      message.error(`Failed to save connector: ${err.response?.data?.detail || err.message}`);
     }
   };
 
@@ -248,14 +264,14 @@ export default function Connectors() {
   };
 
   const columns = [
-    { 
+    {
       title: 'Connector', dataIndex: 'name', key: 'name',
       render: (name, r) => (
         <Space>
-          {getConnectorLogo(r.type)}
+          {getConnectorLogo(r.connector_type || r.type)}
           <div>
             <div style={{ fontWeight: 500 }}>{name}</div>
-            <div style={{ fontSize: 12, color: '#666' }}>{connectorTypes[r.type]?.name || r.type}</div>
+            <div style={{ fontSize: 12, color: '#666' }}>{connectorTypes[r.connector_type || r.type]?.name || r.connector_type || r.type}</div>
           </div>
         </Space>
       )
