@@ -26,6 +26,8 @@ services:
     build: ../ui-dashboard
     ports:
       - "3001:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - mcp-server
     networks:
@@ -36,6 +38,8 @@ services:
     build: ../platform-backend
     ports:
       - "4797:4797"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DATABASE_URL: postgresql://openpoint:openpoint123@postgres:5432/openpoint
       JWT_SECRET: openpoint-secret-key-change-in-production
@@ -49,6 +53,8 @@ services:
     build: ../integration-engine
     ports:
       - "8081:8081"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - platform-backend
     networks:
