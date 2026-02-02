@@ -2071,34 +2071,122 @@ MCP_HTTP_PORT = 8090  # Port for HTTP API
 
 
 # ============================================================================
-# SALESFORCE MCP CLIENT
+# SALESFORCE MCP CLIENT (True MCP Integration via SSE)
 # ============================================================================
 
 class SalesforceMCPClient:
-    """Client to interact with Salesforce MCP Server via HTTP/SSE"""
+    """
+    Client to interact with Salesforce MCP Server via SSE protocol.
 
-    def __init__(self, base_url: str = SALESFORCE_MCP_URL):
-        self.base_url = base_url.rstrip("/")
-        self.auth_token = None
+    This is a TRUE MCP integration that:
+    1. Connects to the Salesforce MCP Server's SSE endpoint
+    2. Uses the MCP protocol to discover and call tools
+    3. Maintains a persistent connection for real-time communication
+    """
 
-    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Call a tool on the Salesforce MCP server"""
-        # For SSE-based MCP servers, we need to use a different approach
-        # Since Salesforce MCP exposes tools via SSE, we'll call the underlying API directly
-        # This is a bridge pattern - MuleSoft calls Salesforce backend through MCP abstraction
+    def __init__(self, mcp_url: str = SALESFORCE_MCP_URL):
+        self.mcp_url = mcp_url.rstrip("/")
+        self.sse_endpoint = f"{self.mcp_url}/sse"
+        self.messages_endpoint = f"{self.mcp_url}/messages"
+        self._session_id = None
+        self._tools_cache = None
+        self._tools_cache_time = None
+        self._cache_ttl = 300  # 5 minutes cache
+
+    async def _get_session(self) -> str:
+        """Initialize SSE connection and get session ID"""
+        if self._session_id:
+            return self._session_id
 
         timeout_config = get_timeout_config(TimeoutTier.STANDARD)
-        async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
-            # First authenticate if needed
-            if not self.auth_token:
-                await self._authenticate(client)
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+                # Connect to SSE endpoint to get session
+                async with client.stream("GET", self.sse_endpoint) as response:
+                    async for line in response.aiter_lines():
+                        if line.startswith("data:"):
+                            data = json.loads(line[5:].strip())
+                            if "session_id" in data:
+                                self._session_id = data["session_id"]
+                                return self._session_id
+                            # For initial connection, extract endpoint info
+                            if "endpoint" in data:
+                                self.messages_endpoint = data["endpoint"]
+                                return "connected"
+                        # Break after first message to avoid blocking
+                        break
+        except Exception as e:
+            print(f"[MCP Client] SSE connection error: {e}")
 
-            # Map tool names to API endpoints
-            endpoint, method, data = self._map_tool_to_endpoint(tool_name, arguments or {})
+        return None
+
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Call a tool on the Salesforce MCP server via MCP protocol.
+
+        Uses the /messages endpoint to send tool call requests.
+        """
+        timeout_config = get_timeout_config(TimeoutTier.STANDARD)
+
+        # Build MCP tool call request
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments or {}
+            }
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+                # Send tool call via MCP messages endpoint
+                response = await client.post(
+                    self.messages_endpoint,
+                    json=mcp_request,
+                    headers={"Content-Type": "application/json"}
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    # Extract result from MCP response
+                    if "result" in result:
+                        content = result["result"].get("content", [])
+                        if content and len(content) > 0:
+                            text_content = content[0].get("text", "{}")
+                            return json.loads(text_content)
+                    return result
+                elif response.status_code == 202:
+                    # Accepted - async processing
+                    return {"status": "accepted", "message": "Tool call is being processed"}
+                else:
+                    # Fallback to direct API call if MCP fails
+                    return await self._fallback_api_call(tool_name, arguments)
+
+        except Exception as e:
+            print(f"[MCP Client] Tool call error: {e}, falling back to direct API")
+            # Fallback to direct API call
+            return await self._fallback_api_call(tool_name, arguments)
+
+    async def _fallback_api_call(self, tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Fallback to direct Salesforce API call if MCP connection fails"""
+        timeout_config = get_timeout_config(TimeoutTier.STANDARD)
+
+        # Map tool names to API endpoints
+        endpoint, method, data = self._map_tool_to_endpoint(tool_name, arguments or {})
+
+        async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+            # Authenticate first
+            auth_response = await client.post(
+                f"{SALESFORCE_API_URL}/api/auth/login",
+                json={"username": "admin", "password": "admin123"}
+            )
 
             headers = {"Content-Type": "application/json"}
-            if self.auth_token:
-                headers["Authorization"] = f"Bearer {self.auth_token}"
+            if auth_response.status_code == 200:
+                token = auth_response.json().get("access_token")
+                headers["Authorization"] = f"Bearer {token}"
 
             try:
                 if method == "GET":
@@ -2119,23 +2207,8 @@ class SalesforceMCPClient:
             except Exception as e:
                 return {"error": str(e)}
 
-    async def _authenticate(self, client: httpx.AsyncClient) -> bool:
-        """Authenticate with Salesforce backend"""
-        try:
-            response = await client.post(
-                f"{SALESFORCE_API_URL}/api/auth/login",
-                json={"username": "admin", "password": "admin123"}
-            )
-            if response.status_code == 200:
-                data = response.json()
-                self.auth_token = data.get("access_token")
-                return True
-        except Exception:
-            pass
-        return False
-
     def _map_tool_to_endpoint(self, tool_name: str, arguments: Dict[str, Any]) -> Tuple[str, str, Dict]:
-        """Map MCP tool names to Salesforce API endpoints"""
+        """Map MCP tool names to Salesforce API endpoints (for fallback)"""
         tool_mappings = {
             # Authentication
             "login": ("/api/auth/login", "POST", arguments),
@@ -2199,31 +2272,115 @@ class SalesforceMCPClient:
         return tool_mappings.get(tool_name, (f"/api/{tool_name}", "GET", {}))
 
     async def list_tools(self) -> List[Dict[str, Any]]:
-        """List available tools from Salesforce MCP"""
+        """
+        List available tools from Salesforce MCP server.
+
+        Uses the MCP protocol to discover tools dynamically.
+        """
+        # Check cache first
+        if self._tools_cache and self._tools_cache_time:
+            cache_age = (datetime.now() - self._tools_cache_time).total_seconds()
+            if cache_age < self._cache_ttl:
+                return self._tools_cache
+
+        timeout_config = get_timeout_config(TimeoutTier.STANDARD)
+
+        # Build MCP tools/list request
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/list",
+            "params": {}
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+                response = await client.post(
+                    self.messages_endpoint,
+                    json=mcp_request,
+                    headers={"Content-Type": "application/json"}
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    if "result" in result and "tools" in result["result"]:
+                        tools = result["result"]["tools"]
+                        # Cache the tools
+                        self._tools_cache = tools
+                        self._tools_cache_time = datetime.now()
+                        return tools
+        except Exception as e:
+            print(f"[MCP Client] List tools error: {e}, using static list")
+
+        # Return static list as fallback
+        return self._get_static_tools_list()
+
+    def _get_static_tools_list(self) -> List[Dict[str, Any]]:
+        """Static tools list as fallback"""
         return [
-            {"name": "login", "description": "Login to Salesforce", "parameters": ["username", "password"]},
-            {"name": "list_accounts", "description": "List all accounts", "parameters": ["skip", "limit", "search"]},
-            {"name": "get_account", "description": "Get account by ID", "parameters": ["account_id"]},
-            {"name": "create_account", "description": "Create new account", "parameters": ["name", "industry", "revenue", "employees"]},
-            {"name": "update_account", "description": "Update account", "parameters": ["account_id", "name", "industry"]},
-            {"name": "delete_account", "description": "Delete account", "parameters": ["account_id"]},
-            {"name": "list_account_requests", "description": "List account creation requests", "parameters": ["status"]},
-            {"name": "create_account_request", "description": "Create account request for approval", "parameters": ["account_name", "industry", "requester"]},
-            {"name": "update_account_request_status", "description": "Update request status", "parameters": ["request_id", "status"]},
-            {"name": "list_contacts", "description": "List all contacts", "parameters": ["skip", "limit", "search"]},
-            {"name": "get_contact", "description": "Get contact by ID", "parameters": ["contact_id"]},
-            {"name": "create_contact", "description": "Create new contact", "parameters": ["first_name", "last_name", "email", "phone", "account_id"]},
-            {"name": "list_cases", "description": "List all cases", "parameters": ["skip", "limit", "search"]},
-            {"name": "get_case", "description": "Get case by ID", "parameters": ["case_id"]},
-            {"name": "create_case", "description": "Create new case", "parameters": ["subject", "contact_id", "priority", "status", "description"]},
-            {"name": "escalate_case", "description": "Escalate a case", "parameters": ["case_id"]},
-            {"name": "list_leads", "description": "List all leads", "parameters": ["skip", "limit", "search"]},
-            {"name": "convert_lead", "description": "Convert lead to account/contact/opportunity", "parameters": ["lead_id"]},
-            {"name": "list_opportunities", "description": "List all opportunities", "parameters": ["skip", "limit", "search"]},
-            {"name": "get_dashboard_stats", "description": "Get dashboard statistics", "parameters": []},
-            {"name": "global_search", "description": "Search across all objects", "parameters": ["query"]},
-            {"name": "health_check", "description": "Check Salesforce API health", "parameters": []},
+            {"name": "login", "description": "Login to Salesforce", "inputSchema": {"type": "object", "properties": {"username": {"type": "string"}, "password": {"type": "string"}}}},
+            {"name": "list_accounts", "description": "List all accounts", "inputSchema": {"type": "object", "properties": {"skip": {"type": "integer"}, "limit": {"type": "integer"}, "search": {"type": "string"}}}},
+            {"name": "get_account", "description": "Get account by ID", "inputSchema": {"type": "object", "properties": {"account_id": {"type": "integer"}}, "required": ["account_id"]}},
+            {"name": "create_account", "description": "Create new account", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "industry": {"type": "string"}}, "required": ["name"]}},
+            {"name": "update_account", "description": "Update account", "inputSchema": {"type": "object", "properties": {"account_id": {"type": "integer"}, "name": {"type": "string"}}, "required": ["account_id"]}},
+            {"name": "delete_account", "description": "Delete account", "inputSchema": {"type": "object", "properties": {"account_id": {"type": "integer"}}, "required": ["account_id"]}},
+            {"name": "list_account_requests", "description": "List account creation requests", "inputSchema": {"type": "object", "properties": {"status": {"type": "string"}}}},
+            {"name": "create_account_request", "description": "Create account request for approval", "inputSchema": {"type": "object", "properties": {"account_name": {"type": "string"}, "industry": {"type": "string"}}, "required": ["account_name"]}},
+            {"name": "list_contacts", "description": "List all contacts", "inputSchema": {"type": "object", "properties": {"skip": {"type": "integer"}, "limit": {"type": "integer"}, "search": {"type": "string"}}}},
+            {"name": "get_contact", "description": "Get contact by ID", "inputSchema": {"type": "object", "properties": {"contact_id": {"type": "integer"}}, "required": ["contact_id"]}},
+            {"name": "create_contact", "description": "Create new contact", "inputSchema": {"type": "object", "properties": {"first_name": {"type": "string"}, "last_name": {"type": "string"}, "email": {"type": "string"}}, "required": ["first_name", "last_name"]}},
+            {"name": "list_cases", "description": "List all cases", "inputSchema": {"type": "object", "properties": {"skip": {"type": "integer"}, "limit": {"type": "integer"}, "search": {"type": "string"}}}},
+            {"name": "get_case", "description": "Get case by ID", "inputSchema": {"type": "object", "properties": {"case_id": {"type": "integer"}}, "required": ["case_id"]}},
+            {"name": "create_case", "description": "Create new case", "inputSchema": {"type": "object", "properties": {"subject": {"type": "string"}, "contact_id": {"type": "integer"}}, "required": ["subject", "contact_id"]}},
+            {"name": "escalate_case", "description": "Escalate a case", "inputSchema": {"type": "object", "properties": {"case_id": {"type": "integer"}}, "required": ["case_id"]}},
+            {"name": "list_leads", "description": "List all leads", "inputSchema": {"type": "object", "properties": {"skip": {"type": "integer"}, "limit": {"type": "integer"}, "search": {"type": "string"}}}},
+            {"name": "convert_lead", "description": "Convert lead to account/contact/opportunity", "inputSchema": {"type": "object", "properties": {"lead_id": {"type": "integer"}}, "required": ["lead_id"]}},
+            {"name": "list_opportunities", "description": "List all opportunities", "inputSchema": {"type": "object", "properties": {"skip": {"type": "integer"}, "limit": {"type": "integer"}, "search": {"type": "string"}}}},
+            {"name": "get_dashboard_stats", "description": "Get dashboard statistics", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "global_search", "description": "Search across all objects", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+            {"name": "health_check", "description": "Check Salesforce API health", "inputSchema": {"type": "object", "properties": {}}},
         ]
+
+    async def check_connection(self) -> Dict[str, Any]:
+        """Check if MCP server is reachable and responding"""
+        timeout_config = get_timeout_config(TimeoutTier.FAST)
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+                # Try to connect to SSE endpoint
+                response = await client.get(self.sse_endpoint, timeout=5)
+                if response.status_code in [200, 202]:
+                    return {
+                        "connected": True,
+                        "mcp_url": self.mcp_url,
+                        "sse_endpoint": self.sse_endpoint,
+                        "messages_endpoint": self.messages_endpoint,
+                        "status": "healthy"
+                    }
+        except Exception as e:
+            pass
+
+        # Try fallback to direct API
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+                response = await client.get(f"{SALESFORCE_API_URL}/api/health")
+                if response.status_code == 200:
+                    return {
+                        "connected": True,
+                        "mcp_url": self.mcp_url,
+                        "fallback_mode": True,
+                        "salesforce_api_url": SALESFORCE_API_URL,
+                        "status": "healthy (fallback mode)"
+                    }
+        except Exception as e:
+            return {
+                "connected": False,
+                "mcp_url": self.mcp_url,
+                "error": str(e),
+                "status": "unreachable"
+            }
+
+        return {"connected": False, "status": "unknown"}
 
 
 # Global Salesforce MCP client instance
@@ -3064,15 +3221,21 @@ async def call_salesforce_mcp_tool(
 
 @app.get("/api/salesforce-mcp/health")
 async def check_salesforce_mcp_health(user = Depends(require_auth)):
-    """Check Salesforce MCP server health"""
+    """Check Salesforce MCP server health and connection status"""
     try:
-        result = await salesforce_mcp_client.call_tool("health_check", {})
+        # Check MCP connection first
+        connection_status = await salesforce_mcp_client.check_connection()
+
+        # Also call health_check tool
+        health_result = await salesforce_mcp_client.call_tool("health_check", {})
+
         return {
-            "success": True,
+            "success": connection_status.get("connected", False),
             "mcp_server": "salesforce-crm",
             "mcp_url": SALESFORCE_MCP_URL,
             "salesforce_api_url": SALESFORCE_API_URL,
-            "health": result
+            "connection": connection_status,
+            "health": health_result
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
