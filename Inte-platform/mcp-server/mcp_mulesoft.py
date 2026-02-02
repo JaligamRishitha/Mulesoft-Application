@@ -2066,7 +2066,168 @@ BACKEND_API_URL = "http://149.102.158.71:4797/api"  # Remote MuleSoft backend
 SAP_API_URL = "http://149.102.158.71:4798"  # Remote SAP backend
 SERVICENOW_API_URL = "http://149.102.158.71:4780"  # Remote ServiceNow backend
 SALESFORCE_API_URL = "http://149.102.158.71:4799"  # Remote Salesforce backend
+SALESFORCE_MCP_URL = "http://149.102.158.71:8095"  # Salesforce MCP Server (SSE)
 MCP_HTTP_PORT = 8090  # Port for HTTP API
+
+
+# ============================================================================
+# SALESFORCE MCP CLIENT
+# ============================================================================
+
+class SalesforceMCPClient:
+    """Client to interact with Salesforce MCP Server via HTTP/SSE"""
+
+    def __init__(self, base_url: str = SALESFORCE_MCP_URL):
+        self.base_url = base_url.rstrip("/")
+        self.auth_token = None
+
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Call a tool on the Salesforce MCP server"""
+        # For SSE-based MCP servers, we need to use a different approach
+        # Since Salesforce MCP exposes tools via SSE, we'll call the underlying API directly
+        # This is a bridge pattern - MuleSoft calls Salesforce backend through MCP abstraction
+
+        timeout_config = get_timeout_config(TimeoutTier.STANDARD)
+        async with httpx.AsyncClient(timeout=timeout_config.to_httpx_timeout(), verify=False) as client:
+            # First authenticate if needed
+            if not self.auth_token:
+                await self._authenticate(client)
+
+            # Map tool names to API endpoints
+            endpoint, method, data = self._map_tool_to_endpoint(tool_name, arguments or {})
+
+            headers = {"Content-Type": "application/json"}
+            if self.auth_token:
+                headers["Authorization"] = f"Bearer {self.auth_token}"
+
+            try:
+                if method == "GET":
+                    response = await client.get(f"{SALESFORCE_API_URL}{endpoint}", headers=headers, params=arguments)
+                elif method == "POST":
+                    response = await client.post(f"{SALESFORCE_API_URL}{endpoint}", headers=headers, json=data)
+                elif method == "PUT":
+                    response = await client.put(f"{SALESFORCE_API_URL}{endpoint}", headers=headers, json=data)
+                elif method == "DELETE":
+                    response = await client.delete(f"{SALESFORCE_API_URL}{endpoint}", headers=headers)
+                else:
+                    return {"error": f"Unsupported method: {method}"}
+
+                if response.status_code >= 400:
+                    return {"error": f"API Error {response.status_code}", "details": response.text}
+
+                return response.json()
+            except Exception as e:
+                return {"error": str(e)}
+
+    async def _authenticate(self, client: httpx.AsyncClient) -> bool:
+        """Authenticate with Salesforce backend"""
+        try:
+            response = await client.post(
+                f"{SALESFORCE_API_URL}/api/auth/login",
+                json={"username": "admin", "password": "admin123"}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                self.auth_token = data.get("access_token")
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _map_tool_to_endpoint(self, tool_name: str, arguments: Dict[str, Any]) -> Tuple[str, str, Dict]:
+        """Map MCP tool names to Salesforce API endpoints"""
+        tool_mappings = {
+            # Authentication
+            "login": ("/api/auth/login", "POST", arguments),
+            "get_current_user": ("/api/auth/me", "GET", {}),
+            "list_users": ("/api/auth/users", "GET", {}),
+
+            # Accounts
+            "list_accounts": ("/api/accounts", "GET", {}),
+            "get_account": (f"/api/accounts/{arguments.get('account_id', '')}", "GET", {}),
+            "create_account": ("/api/accounts", "POST", arguments),
+            "update_account": (f"/api/accounts/{arguments.get('account_id', '')}", "PUT", arguments),
+            "delete_account": (f"/api/accounts/{arguments.get('account_id', '')}", "DELETE", {}),
+
+            # Account Requests (for approval workflow)
+            "list_account_requests": ("/api/accounts/requests", "GET", {}),
+            "get_account_request": (f"/api/accounts/requests/{arguments.get('request_id', '')}", "GET", {}),
+            "create_account_request": ("/api/accounts/requests", "POST", arguments),
+            "update_account_request_status": (f"/api/accounts/requests/{arguments.get('request_id', '')}/status", "PUT", arguments),
+
+            # Contacts
+            "list_contacts": ("/api/contacts", "GET", {}),
+            "get_contact": (f"/api/contacts/{arguments.get('contact_id', '')}", "GET", {}),
+            "create_contact": ("/api/contacts", "POST", arguments),
+            "update_contact": (f"/api/contacts/{arguments.get('contact_id', '')}", "PUT", arguments),
+            "delete_contact": (f"/api/contacts/{arguments.get('contact_id', '')}", "DELETE", {}),
+
+            # Cases
+            "list_cases": ("/api/cases", "GET", {}),
+            "get_case": (f"/api/cases/{arguments.get('case_id', '')}", "GET", {}),
+            "create_case": ("/api/cases", "POST", arguments),
+            "update_case": (f"/api/cases/{arguments.get('case_id', '')}", "PUT", arguments),
+            "delete_case": (f"/api/cases/{arguments.get('case_id', '')}", "DELETE", {}),
+            "escalate_case": (f"/api/cases/{arguments.get('case_id', '')}/escalate", "POST", {}),
+
+            # Leads
+            "list_leads": ("/api/leads", "GET", {}),
+            "get_lead": (f"/api/leads/{arguments.get('lead_id', '')}", "GET", {}),
+            "create_lead": ("/api/leads", "POST", arguments),
+            "update_lead": (f"/api/leads/{arguments.get('lead_id', '')}", "PUT", arguments),
+            "delete_lead": (f"/api/leads/{arguments.get('lead_id', '')}", "DELETE", {}),
+            "convert_lead": (f"/api/leads/{arguments.get('lead_id', '')}/convert", "POST", {}),
+
+            # Opportunities
+            "list_opportunities": ("/api/opportunities", "GET", {}),
+            "get_opportunity": (f"/api/opportunities/{arguments.get('opportunity_id', '')}", "GET", {}),
+            "create_opportunity": ("/api/opportunities", "POST", arguments),
+            "update_opportunity": (f"/api/opportunities/{arguments.get('opportunity_id', '')}", "PUT", arguments),
+            "delete_opportunity": (f"/api/opportunities/{arguments.get('opportunity_id', '')}", "DELETE", {}),
+
+            # Dashboard & Activities
+            "get_dashboard_stats": ("/api/dashboard/stats", "GET", {}),
+            "get_recent_records": ("/api/dashboard/recent-records", "GET", {}),
+            "global_search": ("/api/dashboard/search", "GET", {}),
+            "list_activities": ("/api/activities", "GET", {}),
+            "create_activity": ("/api/activities", "POST", arguments),
+
+            # Health
+            "health_check": ("/api/health", "GET", {}),
+        }
+
+        return tool_mappings.get(tool_name, (f"/api/{tool_name}", "GET", {}))
+
+    async def list_tools(self) -> List[Dict[str, Any]]:
+        """List available tools from Salesforce MCP"""
+        return [
+            {"name": "login", "description": "Login to Salesforce", "parameters": ["username", "password"]},
+            {"name": "list_accounts", "description": "List all accounts", "parameters": ["skip", "limit", "search"]},
+            {"name": "get_account", "description": "Get account by ID", "parameters": ["account_id"]},
+            {"name": "create_account", "description": "Create new account", "parameters": ["name", "industry", "revenue", "employees"]},
+            {"name": "update_account", "description": "Update account", "parameters": ["account_id", "name", "industry"]},
+            {"name": "delete_account", "description": "Delete account", "parameters": ["account_id"]},
+            {"name": "list_account_requests", "description": "List account creation requests", "parameters": ["status"]},
+            {"name": "create_account_request", "description": "Create account request for approval", "parameters": ["account_name", "industry", "requester"]},
+            {"name": "update_account_request_status", "description": "Update request status", "parameters": ["request_id", "status"]},
+            {"name": "list_contacts", "description": "List all contacts", "parameters": ["skip", "limit", "search"]},
+            {"name": "get_contact", "description": "Get contact by ID", "parameters": ["contact_id"]},
+            {"name": "create_contact", "description": "Create new contact", "parameters": ["first_name", "last_name", "email", "phone", "account_id"]},
+            {"name": "list_cases", "description": "List all cases", "parameters": ["skip", "limit", "search"]},
+            {"name": "get_case", "description": "Get case by ID", "parameters": ["case_id"]},
+            {"name": "create_case", "description": "Create new case", "parameters": ["subject", "contact_id", "priority", "status", "description"]},
+            {"name": "escalate_case", "description": "Escalate a case", "parameters": ["case_id"]},
+            {"name": "list_leads", "description": "List all leads", "parameters": ["skip", "limit", "search"]},
+            {"name": "convert_lead", "description": "Convert lead to account/contact/opportunity", "parameters": ["lead_id"]},
+            {"name": "list_opportunities", "description": "List all opportunities", "parameters": ["skip", "limit", "search"]},
+            {"name": "get_dashboard_stats", "description": "Get dashboard statistics", "parameters": []},
+            {"name": "global_search", "description": "Search across all objects", "parameters": ["query"]},
+            {"name": "health_check", "description": "Check Salesforce API health", "parameters": []},
+        ]
+
+
+# Global Salesforce MCP client instance
+salesforce_mcp_client = SalesforceMCPClient()
 
 # In-memory storage for demo (replace with database in production)
 connectors_db = {
@@ -2074,7 +2235,11 @@ connectors_db = {
         "id": 1,
         "name": "Salesforce Production",
         "connector_type": "salesforce",
-        "connection_config": {"server_url": "http://149.102.158.71:4799"},
+        "connection_config": {
+            "server_url": "http://149.102.158.71:4799",
+            "mcp_server_url": "http://149.102.158.71:8095",
+            "use_mcp": True
+        },
         "status": "active",
         "created_at": "2026-01-30T10:00:00.000000"
     }
@@ -2364,12 +2529,17 @@ async def get_connector_types(user = Depends(require_auth)):
     except Exception as e:
         print(f"[MCP] Error fetching connector types from remote: {e}")
     # Fallback
-    config_schema = {"server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}}
+    base_config_schema = {"server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}}
+    salesforce_config_schema = {
+        "server_url": {"type": "string", "label": "Salesforce API URL", "required": False, "placeholder": "http://salesforce-server:port"},
+        "mcp_server_url": {"type": "string", "label": "Salesforce MCP URL", "required": False, "placeholder": "http://salesforce-mcp:8095"},
+        "use_mcp": {"type": "boolean", "label": "Use MCP Integration", "required": False, "default": True}
+    }
     return [
-        {"type": "salesforce", "name": "Salesforce", "description": "Connect to Salesforce CRM", "config_schema": config_schema},
-        {"type": "sap", "name": "SAP", "description": "Connect to SAP ERP", "config_schema": config_schema},
-        {"type": "servicenow", "name": "ServiceNow", "description": "Connect to ServiceNow ITSM", "config_schema": config_schema},
-        {"type": "database", "name": "Database", "description": "Connect to databases", "config_schema": config_schema},
+        {"type": "salesforce", "name": "Salesforce", "description": "Connect to Salesforce CRM via MCP or direct API", "config_schema": salesforce_config_schema},
+        {"type": "sap", "name": "SAP", "description": "Connect to SAP ERP", "config_schema": base_config_schema},
+        {"type": "servicenow", "name": "ServiceNow", "description": "Connect to ServiceNow ITSM", "config_schema": base_config_schema},
+        {"type": "database", "name": "Database", "description": "Connect to databases", "config_schema": base_config_schema},
     ]
 
 @app.get("/api/connectors/{connector_id}")
@@ -2852,6 +3022,297 @@ async def orchestrate_account_requests(connector_id: int = Query(...), user = De
         "total_failed": 0,
         "results": []
     }
+
+# ============================================================================
+# SALESFORCE MCP INTEGRATION ENDPOINTS
+# ============================================================================
+
+@app.get("/api/salesforce-mcp/tools")
+async def list_salesforce_mcp_tools(user = Depends(require_auth)):
+    """List available tools from Salesforce MCP server"""
+    try:
+        tools = await salesforce_mcp_client.list_tools()
+        return {
+            "success": True,
+            "mcp_server": "salesforce-crm",
+            "mcp_url": SALESFORCE_MCP_URL,
+            "tools": tools,
+            "total": len(tools)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "tools": []}
+
+
+@app.post("/api/salesforce-mcp/call")
+async def call_salesforce_mcp_tool(
+    tool_name: str = Body(..., embed=True),
+    arguments: Dict[str, Any] = Body(default={}, embed=True),
+    user = Depends(require_auth)
+):
+    """Call a tool on the Salesforce MCP server"""
+    try:
+        result = await salesforce_mcp_client.call_tool(tool_name, arguments)
+        return {
+            "success": True,
+            "tool": tool_name,
+            "mcp_server": "salesforce-crm",
+            "result": result
+        }
+    except Exception as e:
+        return {"success": False, "tool": tool_name, "error": str(e)}
+
+
+@app.get("/api/salesforce-mcp/health")
+async def check_salesforce_mcp_health(user = Depends(require_auth)):
+    """Check Salesforce MCP server health"""
+    try:
+        result = await salesforce_mcp_client.call_tool("health_check", {})
+        return {
+            "success": True,
+            "mcp_server": "salesforce-crm",
+            "mcp_url": SALESFORCE_MCP_URL,
+            "salesforce_api_url": SALESFORCE_API_URL,
+            "health": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/salesforce-mcp/accounts")
+async def get_salesforce_accounts_via_mcp(
+    skip: int = Query(default=0),
+    limit: int = Query(default=50),
+    search: str = Query(default=""),
+    user = Depends(require_auth)
+):
+    """Get accounts from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("list_accounts", {
+            "skip": skip,
+            "limit": limit,
+            "search": search
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "accounts": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "accounts": []}
+
+
+@app.post("/api/salesforce-mcp/accounts")
+async def create_salesforce_account_via_mcp(
+    name: str = Body(...),
+    industry: str = Body(default=""),
+    revenue: Optional[float] = Body(default=None),
+    employees: Optional[int] = Body(default=None),
+    user = Depends(require_auth)
+):
+    """Create a new account in Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("create_account", {
+            "name": name,
+            "industry": industry,
+            "revenue": revenue,
+            "employees": employees
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "account": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/salesforce-mcp/account-requests")
+async def get_salesforce_account_requests_via_mcp(
+    status: Optional[str] = Query(default=None),
+    user = Depends(require_auth)
+):
+    """Get account creation requests from Salesforce via MCP"""
+    try:
+        args = {}
+        if status:
+            args["status"] = status
+        result = await salesforce_mcp_client.call_tool("list_account_requests", args)
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "requests": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "requests": []}
+
+
+@app.post("/api/salesforce-mcp/account-requests")
+async def create_salesforce_account_request_via_mcp(
+    account_name: str = Body(...),
+    industry: str = Body(default=""),
+    requester: str = Body(default="MuleSoft Integration"),
+    user = Depends(require_auth)
+):
+    """Create an account request in Salesforce via MCP (for approval workflow)"""
+    try:
+        result = await salesforce_mcp_client.call_tool("create_account_request", {
+            "account_name": account_name,
+            "industry": industry,
+            "requester": requester
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "request": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/salesforce-mcp/account-requests/{request_id}/status")
+async def update_salesforce_account_request_status_via_mcp(
+    request_id: int,
+    status: str = Body(..., embed=True),
+    user = Depends(require_auth)
+):
+    """Update account request status in Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("update_account_request_status", {
+            "request_id": request_id,
+            "status": status
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "result": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/salesforce-mcp/cases")
+async def get_salesforce_cases_via_mcp(
+    skip: int = Query(default=0),
+    limit: int = Query(default=50),
+    search: str = Query(default=""),
+    user = Depends(require_auth)
+):
+    """Get cases from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("list_cases", {
+            "skip": skip,
+            "limit": limit,
+            "search": search
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "cases": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "cases": []}
+
+
+@app.get("/api/salesforce-mcp/contacts")
+async def get_salesforce_contacts_via_mcp(
+    skip: int = Query(default=0),
+    limit: int = Query(default=50),
+    search: str = Query(default=""),
+    user = Depends(require_auth)
+):
+    """Get contacts from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("list_contacts", {
+            "skip": skip,
+            "limit": limit,
+            "search": search
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "contacts": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "contacts": []}
+
+
+@app.get("/api/salesforce-mcp/leads")
+async def get_salesforce_leads_via_mcp(
+    skip: int = Query(default=0),
+    limit: int = Query(default=50),
+    search: str = Query(default=""),
+    user = Depends(require_auth)
+):
+    """Get leads from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("list_leads", {
+            "skip": skip,
+            "limit": limit,
+            "search": search
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "leads": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "leads": []}
+
+
+@app.get("/api/salesforce-mcp/opportunities")
+async def get_salesforce_opportunities_via_mcp(
+    skip: int = Query(default=0),
+    limit: int = Query(default=50),
+    search: str = Query(default=""),
+    user = Depends(require_auth)
+):
+    """Get opportunities from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("list_opportunities", {
+            "skip": skip,
+            "limit": limit,
+            "search": search
+        })
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "opportunities": result if isinstance(result, list) else result.get("items", result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "opportunities": []}
+
+
+@app.get("/api/salesforce-mcp/dashboard")
+async def get_salesforce_dashboard_via_mcp(user = Depends(require_auth)):
+    """Get dashboard statistics from Salesforce via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("get_dashboard_stats", {})
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "dashboard": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/salesforce-mcp/search")
+async def global_search_salesforce_via_mcp(
+    q: str = Query(..., description="Search query"),
+    user = Depends(require_auth)
+):
+    """Global search across Salesforce objects via MCP"""
+    try:
+        result = await salesforce_mcp_client.call_tool("global_search", {"query": q})
+        return {
+            "success": True,
+            "source": "salesforce-mcp",
+            "query": q,
+            "results": result
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "results": []}
+
 
 # ============================================================================
 # SERVICENOW STATUS ENDPOINT

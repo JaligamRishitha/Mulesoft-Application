@@ -1,15 +1,33 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import httpx
+import json
 
 from app.database import get_db
 from app.models import Connector
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
+
+# MCP Client Helper Functions
+async def call_mcp_tool(mcp_server_url: str, tool_name: str, arguments: dict = None):
+    """Call a tool on the MCP server"""
+    async with httpx.AsyncClient(timeout=60, verify=False) as client:
+        payload = {
+            "tool": tool_name,
+            "arguments": arguments or {}
+        }
+        response = await client.post(f"{mcp_server_url}/call", json=payload)
+        return response.json()
+
+async def list_mcp_tools(mcp_server_url: str):
+    """List available tools from MCP server"""
+    async with httpx.AsyncClient(timeout=30, verify=False) as client:
+        response = await client.get(f"{mcp_server_url}/tools")
+        return response.json()
 
 class ConnectorCreate(BaseModel):
     connector_name: str
@@ -54,9 +72,12 @@ CONNECTOR_TYPES = {
     "salesforce": {
         "name": "Salesforce",
         "icon": "☁️",
-        "description": "Connect to remote Salesforce backend application",
+        "description": "Connect to remote Salesforce backend application or MCP server",
         "config_schema": {
-            "server_url": {"type": "string", "label": "Server URL", "required": True, "placeholder": "http://your-server-ip:port"}
+            "server_url": {"type": "string", "label": "Salesforce API URL", "required": False, "placeholder": "http://salesforce-server:port"},
+            "mcp_server_url": {"type": "string", "label": "Salesforce MCP URL", "required": False, "placeholder": "http://salesforce-mcp:8095"},
+            "mcp_server_name": {"type": "string", "label": "MCP Server Name", "required": False, "placeholder": "salesforce-crm", "default": "salesforce-crm"},
+            "use_mcp": {"type": "boolean", "label": "Use MCP Integration", "required": False, "default": True, "description": "Enable MCP-based integration for enhanced tool support"}
         }
     },
     "servicenow": {
@@ -212,14 +233,51 @@ async def test_connector(connector_id: int, db: Session = Depends(get_db), curre
     message = ""
 
     try:
+        # Check if this connector uses MCP server
+        mcp_server_url = config.get("mcp_server_url")
         server_url = config.get("server_url", "").rstrip("/")
-        if not server_url:
-            message = "Server URL is not configured"
+
+        if mcp_server_url:
+            # Test MCP server connection
+            mcp_server_url = mcp_server_url.rstrip("/")
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                # Try to list tools to verify MCP server is working
+                response = await client.get(f"{mcp_server_url}/tools")
+                if response.status_code < 500:
+                    success = True
+                    tools = response.json()
+                    tool_count = len(tools.get("tools", tools)) if isinstance(tools, dict) else len(tools)
+                    message = f"MCP server connected. {tool_count} tools available."
+                else:
+                    message = f"MCP server error (HTTP {response.status_code})"
+        elif server_url:
+            # Direct server connection - try multiple health endpoints
+            health_urls = []
+            if connector.health_check_url:
+                health_urls.append(connector.health_check_url)
+            # Try multiple common health endpoints, including the base URL
+            health_urls.extend([
+                f"{server_url}/api/health",
+                f"{server_url}/health",
+                f"{server_url}/api/v1/health",
+                server_url  # Fallback to base URL
+            ])
+
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                for health_url in health_urls:
+                    try:
+                        response = await client.get(health_url)
+                        if response.status_code < 500:
+                            success = True
+                            message = f"Connected to remote server at {health_url} (HTTP {response.status_code})"
+                            break
+                    except Exception:
+                        continue
+
+                if not success:
+                    message = f"Could not connect to any health endpoint on {server_url}"
         else:
-            async with httpx.AsyncClient(timeout=10, verify=False) as client:
-                response = await client.get(server_url)
-                success = response.status_code < 500
-                message = f"Connected to remote server (HTTP {response.status_code})"
+            message = "No server URL or MCP server URL configured"
 
         # Update connector status
         connector.status = "Active" if success else "Error"
@@ -235,3 +293,54 @@ async def test_connector(connector_id: int, db: Session = Depends(get_db), curre
         message = str(e)
 
     return {"success": success, "message": message, "status": connector.status}
+
+
+# MCP Integration Endpoints
+@router.post("/{connector_id}/mcp/call")
+async def call_connector_mcp_tool(
+    connector_id: int,
+    tool_name: str = Body(..., embed=True),
+    arguments: dict = Body(None, embed=True),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Call an MCP tool through the connector"""
+    connector = db.query(Connector).filter(Connector.id == connector_id).first()
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    config = connector.connection_config or {}
+    mcp_server_url = config.get("mcp_server_url")
+
+    if not mcp_server_url:
+        raise HTTPException(status_code=400, detail="Connector does not have MCP server configured")
+
+    try:
+        result = await call_mcp_tool(mcp_server_url, tool_name, arguments)
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{connector_id}/mcp/tools")
+async def list_connector_mcp_tools(
+    connector_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """List available MCP tools for the connector"""
+    connector = db.query(Connector).filter(Connector.id == connector_id).first()
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    config = connector.connection_config or {}
+    mcp_server_url = config.get("mcp_server_url")
+
+    if not mcp_server_url:
+        raise HTTPException(status_code=400, detail="Connector does not have MCP server configured")
+
+    try:
+        tools = await list_mcp_tools(mcp_server_url)
+        return {"success": True, "tools": tools}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
