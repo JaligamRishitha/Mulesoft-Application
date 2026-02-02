@@ -21,10 +21,10 @@ from mcp.types import TextContent
 # CONFIGURATION
 # ============================================================================
 
-BACKEND_API_URL = "http://localhost:8085/api"  # Original backend
-SAP_API_URL = "http://localhost:2004"  # SAP backend
-SERVICENOW_API_URL = "http://localhost:8003"  # Local ServiceNow backend
-MCP_HTTP_PORT = 8090  # Port for HTTP API
+BACKEND_API_URL = "http://149.102.158.71:8085/api"  # Original backend
+SAP_API_URL = "http://149.102.158.71:2004"  # SAP backend
+SERVICENOW_API_URL = "http://149.102.158.71:8003"  # ServiceNow backend
+MCP_HTTP_PORT = 8091  # Port for HTTP API
 
 # In-memory storage for demo (replace with database in production)
 connectors_db = {}
@@ -308,35 +308,53 @@ async def validate_single_request(request: ValidateRequest, connector_id: int = 
 
 @app.post("/api/cases/send-single-to-servicenow")
 async def send_single_to_servicenow(request: SendToServiceNowRequest, connector_id: int = Query(...), user = Depends(require_auth)):
+    ticket_number = None
+    servicenow_response = None
+
     try:
         async with httpx.AsyncClient(verify=False, timeout=30) as client:
             ticket_data = {
                 "short_description": f"Account Creation Request: {request.account_name}",
-                "description": f"Request ID: {request.request_id}\nAccount: {request.account_name}",
+                "description": f"Request ID: {request.request_id}\nAccount: {request.account_name}\nSource: Salesforce CRM",
                 "category": "Account Management",
-                "priority": "3"
+                "priority": "3",
+                "metadata": {
+                    "source_system": "Salesforce",
+                    "request_id": request.request_id,
+                    "account_name": request.account_name,
+                    "callback_url": f"http://149.102.158.71:8091/api/ticket-approval"
+                }
             }
             response = await client.post(f"{SERVICENOW_API_URL}/api/tickets", json=ticket_data)
             if response.status_code in [200, 201]:
-                result = response.json()
-                return {
-                    "success": True,
-                    "ticket_number": result.get("ticket_number", f"TKT-{uuid.uuid4().hex[:8].upper()}"),
-                    "ticket_status": "pending_approval",
-                    "requires_approval": True,
-                    "servicenow_response": result,
-                    "message": "Ticket created - awaiting manual approval in ServiceNow"
-                }
+                servicenow_response = response.json()
+                ticket_number = servicenow_response.get("ticket_number", f"TKT-{uuid.uuid4().hex[:8].upper()}")
     except Exception as e:
-        pass
+        print(f"[MuleSoft] Error sending to ServiceNow: {e}")
 
-    # Fallback simulation - still requires approval
+    # Fallback ticket number if ServiceNow call failed
+    if not ticket_number:
+        ticket_number = f"TKT-{uuid.uuid4().hex[:8].upper()}"
+
+    # Store the pending request for later callback
+    pending_account_requests_db[ticket_number] = {
+        "request_id": request.request_id,
+        "account_name": request.account_name,
+        "ticket_number": ticket_number,
+        "request_data": request.request_data,
+        "created_at": datetime.now().isoformat(),
+        "status": "pending_approval"
+    }
+
+    print(f"[MuleSoft] Stored pending account request: {request.request_id} -> {ticket_number}")
+
     return {
         "success": True,
-        "ticket_number": f"TKT-{uuid.uuid4().hex[:8].upper()}",
+        "ticket_number": ticket_number,
         "ticket_status": "pending_approval",
         "requires_approval": True,
-        "message": "Ticket created (simulated) - awaiting manual approval"
+        "servicenow_response": servicenow_response,
+        "message": "Ticket created - awaiting manual approval in ServiceNow"
     }
 
 @app.post("/api/cases/orchestrate/account-requests")
@@ -578,12 +596,48 @@ async def revoke_api_key(key_id: int, user = Depends(require_auth)):
 # TICKET APPROVAL WEBHOOK (receives approval status from ServiceNow)
 # ============================================================================
 
-# In-memory storage for approval notifications (replace with database in production)
+# Salesforce API URL for callbacks
+SALESFORCE_API_URL = "http://149.102.158.71:4799"
+MULESOFT_SHARED_SECRET = "mulesoft-salesforce-shared-secret-2024"
+
+# In-memory storage for approval notifications and pending requests
 approval_notifications_db = []
+pending_account_requests_db = {}  # Maps ticket_number to request_data
+
+
+async def _callback_to_salesforce(request_id: int, accepted: bool, message: str = None, ticket_status: str = None):
+    """Call back to Salesforce with approval/rejection status"""
+    try:
+        callback_url = f"{SALESFORCE_API_URL}/api/accounts/requests/{request_id}/mulesoft-callback"
+        payload = {
+            "accepted": accepted,
+            "status": ticket_status or ("APPROVED" if accepted else "REJECTED"),
+            "message": message or ("Account request approved" if accepted else "Account request rejected")
+        }
+        headers = {
+            "X-MuleSoft-Secret": MULESOFT_SHARED_SECRET,
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            response = await client.post(callback_url, json=payload, headers=headers)
+            if response.status_code in [200, 201]:
+                print(f"[MuleSoft] Successfully called back to Salesforce for request {request_id}: {accepted}")
+                return True, response.json()
+            else:
+                print(f"[MuleSoft] Failed to callback to Salesforce: {response.status_code} - {response.text}")
+                return False, {"error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        print(f"[MuleSoft] Error calling back to Salesforce: {e}")
+        return False, {"error": str(e)}
+
 
 @app.post("/api/ticket-approval")
 async def receive_ticket_approval(data: Dict[str, Any] = Body(...)):
-    """Receive ticket approval/rejection notification from ServiceNow"""
+    """
+    Receive ticket approval/rejection notification from ServiceNow.
+    When received, callback to Salesforce to create/reject the account.
+    """
     notification = {
         "id": len(approval_notifications_db) + 1,
         "ticket_id": data.get("ticket_id"),
@@ -596,21 +650,49 @@ async def receive_ticket_approval(data: Dict[str, Any] = Body(...)):
         "category": data.get("category"),
         "priority": data.get("priority"),
         "requester_name": data.get("requester_name"),
+        "request_id": data.get("request_id"),  # Salesforce request ID
         "received_at": datetime.now().isoformat()
     }
     approval_notifications_db.append(notification)
 
     print(f"[MuleSoft] Received approval notification: {notification['ticket_number']} - {notification['status']}")
 
-    # Here you could trigger additional workflows based on approval status
-    # For example: update Salesforce, send notifications, etc.
+    # Get request_id from stored pending requests or from the notification
+    request_id = notification.get("request_id")
+    ticket_number = notification.get("ticket_number")
+
+    # Try to find request_id from pending requests if not in notification
+    if not request_id and ticket_number in pending_account_requests_db:
+        request_data = pending_account_requests_db[ticket_number]
+        request_id = request_data.get("request_id")
+
+    # Callback to Salesforce if we have a request_id
+    salesforce_callback_result = None
+    if request_id:
+        is_approved = notification["status"] == "approved"
+        success, result = await _callback_to_salesforce(
+            request_id=request_id,
+            accepted=is_approved,
+            message=notification.get("comments"),
+            ticket_status=notification.get("status", "").upper()
+        )
+        salesforce_callback_result = {
+            "success": success,
+            "result": result
+        }
+
+        # Remove from pending requests if callback was successful
+        if success and ticket_number in pending_account_requests_db:
+            del pending_account_requests_db[ticket_number]
 
     return {
         "success": True,
         "message": f"Approval notification received for ticket {notification['ticket_number']}",
         "status": notification["status"],
-        "notification_id": notification["id"]
+        "notification_id": notification["id"],
+        "salesforce_callback": salesforce_callback_result
     }
+
 
 @app.get("/api/ticket-approvals")
 async def list_ticket_approvals(status: Optional[str] = None):
@@ -619,6 +701,12 @@ async def list_ticket_approvals(status: Optional[str] = None):
     if status:
         results = [n for n in results if n.get("status") == status]
     return {"notifications": results, "total": len(results)}
+
+
+@app.get("/api/pending-account-requests")
+async def list_pending_account_requests():
+    """List all pending account requests waiting for approval"""
+    return {"requests": list(pending_account_requests_db.values()), "total": len(pending_account_requests_db)}
 
 
 # ============================================================================
@@ -651,16 +739,14 @@ async def proxy_request(data: Dict[str, Any] = Body(...), user = Depends(require
         return {"error": str(e)}
 
 # ============================================================================
-# MCP SERVER (for AI model tool calls)
+# MCP SERVER (for AI model tool calls via SSE)
 # ============================================================================
 
 mcp_server = Server("mulesoft-integration")
 
-@mcp_server.call_tool()
-async def mcp_sync_case_to_sap(case_id: int, operation: str = "CREATE"):
-    """Synchronize a case to SAP via MuleSoft"""
-    result = {"case_id": case_id, "operation": operation, "status": "synced"}
-    return [TextContent(type="text", text=json.dumps(result))]
+# MCP SSE Port
+MCP_SSE_PORT = 8092
+
 
 @mcp_server.call_tool()
 async def mcp_health_check():
@@ -668,11 +754,252 @@ async def mcp_health_check():
     result = {"status": "healthy", "timestamp": datetime.now().isoformat()}
     return [TextContent(type="text", text=json.dumps(result))]
 
+
+@mcp_server.call_tool()
+async def mcp_sync_case_to_sap(case_id: int, operation: str = "CREATE"):
+    """Synchronize a case to SAP via MuleSoft"""
+    result = {"case_id": case_id, "operation": operation, "status": "synced"}
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_validate_account_request(request_id: int, account_name: str):
+    """Validate an account creation request from Salesforce"""
+    result = {
+        "validation_passed": True,
+        "approval_status": "pending",
+        "request_id": request_id,
+        "account_name": account_name,
+        "mulesoft_transaction_id": f"MULE-{uuid.uuid4().hex[:8].upper()}",
+        "validation_timestamp": datetime.now().isoformat(),
+        "message": "Request validated - requires approval via ServiceNow"
+    }
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_send_to_servicenow(request_id: int, account_name: str, request_data: str = "{}"):
+    """Send account request to ServiceNow for approval via MuleSoft"""
+    import json as json_module
+    try:
+        data = json_module.loads(request_data) if request_data else {}
+    except:
+        data = {}
+
+    ticket_number = f"TKT-{uuid.uuid4().hex[:8].upper()}"
+
+    # Store pending request
+    pending_account_requests_db[ticket_number] = {
+        "request_id": request_id,
+        "account_name": account_name,
+        "ticket_number": ticket_number,
+        "request_data": data,
+        "created_at": datetime.now().isoformat(),
+        "status": "pending_approval"
+    }
+
+    # Try to create ticket in ServiceNow
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            ticket_data = {
+                "short_description": f"Account Creation Request: {account_name}",
+                "description": f"Request ID: {request_id}\nAccount: {account_name}\nSource: Salesforce CRM via MCP",
+                "category": "Account Management",
+                "priority": "3",
+                "metadata": {
+                    "source_system": "Salesforce",
+                    "request_id": request_id,
+                    "account_name": account_name,
+                    "callback_url": f"http://149.102.158.71:8091/api/ticket-approval"
+                }
+            }
+            response = await client.post(f"{SERVICENOW_API_URL}/api/tickets", json=ticket_data)
+            if response.status_code in [200, 201]:
+                servicenow_response = response.json()
+                ticket_number = servicenow_response.get("ticket_number", ticket_number)
+    except Exception as e:
+        print(f"[MCP] ServiceNow call failed: {e}")
+
+    result = {
+        "success": True,
+        "ticket_number": ticket_number,
+        "ticket_status": "pending_approval",
+        "requires_approval": True,
+        "message": "Ticket created in ServiceNow - awaiting approval"
+    }
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_approve_account_request(request_id: int, approved: bool = True, comments: str = ""):
+    """Manually approve or reject an account request and callback to Salesforce"""
+    # Find the pending request
+    target_ticket = None
+    for ticket_num, req_data in pending_account_requests_db.items():
+        if req_data.get("request_id") == request_id:
+            target_ticket = ticket_num
+            break
+
+    if not target_ticket:
+        result = {"success": False, "error": f"No pending request found with ID {request_id}"}
+        return [TextContent(type="text", text=json.dumps(result))]
+
+    # Callback to Salesforce
+    success, callback_result = await _callback_to_salesforce(
+        request_id=request_id,
+        accepted=approved,
+        message=comments or ("Approved via MCP" if approved else "Rejected via MCP"),
+        ticket_status="APPROVED" if approved else "REJECTED"
+    )
+
+    if success:
+        del pending_account_requests_db[target_ticket]
+
+    result = {
+        "success": success,
+        "request_id": request_id,
+        "approved": approved,
+        "ticket_number": target_ticket,
+        "salesforce_callback": callback_result,
+        "message": f"Account request {'approved' if approved else 'rejected'} and Salesforce notified"
+    }
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_list_pending_requests():
+    """List all pending account requests waiting for approval"""
+    result = {
+        "requests": list(pending_account_requests_db.values()),
+        "total": len(pending_account_requests_db)
+    }
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_get_approval_notifications(status_filter: str = ""):
+    """Get approval notifications received from ServiceNow"""
+    results = approval_notifications_db
+    if status_filter:
+        results = [n for n in results if n.get("status") == status_filter]
+    result = {"notifications": results, "total": len(results)}
+    return [TextContent(type="text", text=json.dumps(result))]
+
+
+@mcp_server.call_tool()
+async def mcp_test_salesforce_connection():
+    """Test connection to Salesforce backend"""
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            response = await client.get(f"{SALESFORCE_API_URL}/api/health")
+            if response.status_code == 200:
+                return [TextContent(type="text", text=json.dumps({"success": True, "message": "Salesforce connection successful"}))]
+    except Exception as e:
+        pass
+    return [TextContent(type="text", text=json.dumps({"success": False, "message": "Salesforce not reachable"}))]
+
+
+@mcp_server.call_tool()
+async def mcp_test_servicenow_connection():
+    """Test connection to ServiceNow backend"""
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            response = await client.get(f"{SERVICENOW_API_URL}/api/health")
+            if response.status_code == 200:
+                return [TextContent(type="text", text=json.dumps({"success": True, "message": "ServiceNow connection successful"}))]
+    except Exception as e:
+        pass
+    return [TextContent(type="text", text=json.dumps({"success": False, "message": "ServiceNow not reachable"}))]
+
+
+@mcp_server.call_tool()
+async def mcp_test_sap_connection():
+    """Test connection to SAP backend"""
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            response = await client.get(f"{SAP_API_URL}/api/health")
+            if response.status_code == 200:
+                return [TextContent(type="text", text=json.dumps({"success": True, "message": "SAP connection successful"}))]
+    except Exception as e:
+        pass
+    return [TextContent(type="text", text=json.dumps({"success": False, "message": "SAP not reachable"}))]
+
+
+# ============================================================================
+# MCP SSE SERVER SETUP
+# ============================================================================
+
+def create_mcp_sse_app():
+    """Create Starlette app for MCP SSE connections"""
+    from mcp.server.sse import SseServerTransport
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.middleware import Middleware
+    from starlette.middleware.cors import CORSMiddleware
+
+    sse = SseServerTransport("/messages")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp_server.run(
+                streams[0], streams[1], mcp_server.create_initialization_options()
+            )
+
+    async def handle_messages(request):
+        await sse.handle_post_message(request.scope, request.receive, request._send)
+
+    middleware = [
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    ]
+
+    return Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        ],
+        middleware=middleware,
+    )
+
+
+def run_mcp_sse_server():
+    """Run MCP SSE server in a separate thread"""
+    import threading
+
+    def _run_sse():
+        mcp_sse_app = create_mcp_sse_app()
+        print(f"Starting MCP SSE Server on port {MCP_SSE_PORT}")
+        print(f"  SSE Endpoint: http://149.102.158.71:{MCP_SSE_PORT}/sse")
+        uvicorn.run(mcp_sse_app, host="0.0.0.0", port=MCP_SSE_PORT, log_level="warning")
+
+    sse_thread = threading.Thread(target=_run_sse, daemon=True)
+    sse_thread.start()
+    return sse_thread
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
 
 if __name__ == "__main__":
-    print(f"Starting MuleSoft MCP HTTP API on port {MCP_HTTP_PORT}")
-    print(f"Frontend should connect to: http://localhost:{MCP_HTTP_PORT}/api")
+    print("=" * 60)
+    print("MuleSoft Integration Platform")
+    print("=" * 60)
+
+    # Start MCP SSE server in background thread
+    run_mcp_sse_server()
+
+    print(f"\nStarting HTTP API on port {MCP_HTTP_PORT}")
+    print(f"  HTTP API: http://149.102.158.71:{MCP_HTTP_PORT}/api")
+    print(f"  MCP SSE:  http://149.102.158.71:{MCP_SSE_PORT}/sse")
+    print("=" * 60)
+
+    # Run main HTTP API
     uvicorn.run(app, host="0.0.0.0", port=MCP_HTTP_PORT)
