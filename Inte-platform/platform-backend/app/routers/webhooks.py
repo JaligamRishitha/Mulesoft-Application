@@ -101,33 +101,77 @@ async def update_salesforce_request_status(
                     print(f"Request {request.get('id')}: servicenow_ticket_id={sn_ticket}")
 
                     if sn_ticket == ticket_number:
-                        # Update the request
-                        # status = APPROVED/REJECTED (main status)
-                        # integration_status = COMPLETED/REJECTED (integration status)
-                        update_payload = {
-                            "integration_status": integration_status_map.get(status.lower(), "PENDING_APPROVAL"),
-                            "servicenow_status": status.upper(),
-                            "status": main_status_map.get(status.lower(), "PENDING")
-                        }
+                        request_id = request['id']
 
-                        print(f"Updating Salesforce request {request['id']} with: {update_payload}")
+                        # If approved, call the mulesoft-callback endpoint to create the account
+                        if status.lower() == "approved":
+                            print(f"Calling mulesoft-callback to create account for request {request_id}")
+                            callback_payload = {
+                                "accepted": True,
+                                "status": "APPROVED",
+                                "message": comments or "Approved via ServiceNow"
+                            }
+                            callback_response = await client.post(
+                                f"{sf_url}/api/accounts/requests/{request_id}/mulesoft-callback",
+                                headers={
+                                    "X-MuleSoft-Secret": "mulesoft-salesforce-shared-secret-2024",
+                                    "Content-Type": "application/json"
+                                },
+                                json=callback_payload
+                            )
+                            print(f"Mulesoft callback response: {callback_response.status_code}")
+                            if callback_response.status_code in [200, 201]:
+                                print(f"Successfully created account for request {request_id}")
+                                return True
+                            else:
+                                print(f"Failed to create account: {callback_response.text}")
+                                return False
 
-                        update_response = await client.put(
-                            f"{sf_url}/api/accounts/requests/{request['id']}",
-                            headers={
-                                "Authorization": f"Bearer {sf_token}",
-                                "Content-Type": "application/json"
-                            },
-                            json=update_payload
-                        )
+                        elif status.lower() == "rejected":
+                            # For rejection, call callback with accepted=False
+                            print(f"Calling mulesoft-callback to reject request {request_id}")
+                            callback_payload = {
+                                "accepted": False,
+                                "status": "REJECTED",
+                                "message": comments or "Rejected via ServiceNow"
+                            }
+                            callback_response = await client.post(
+                                f"{sf_url}/api/accounts/requests/{request_id}/mulesoft-callback",
+                                headers={
+                                    "X-MuleSoft-Secret": "mulesoft-salesforce-shared-secret-2024",
+                                    "Content-Type": "application/json"
+                                },
+                                json=callback_payload
+                            )
+                            print(f"Rejection callback response: {callback_response.status_code}")
+                            return callback_response.status_code in [200, 201]
 
-                        print(f"Salesforce update response: {update_response.status_code}")
-
-                        if update_response.status_code in [200, 201]:
-                            print(f"Successfully updated Salesforce request {request['id']} with status {status}")
-                            return True
                         else:
-                            print(f"Failed to update Salesforce: {update_response.text}")
+                            # For pending status, just update the status fields
+                            update_payload = {
+                                "integration_status": integration_status_map.get(status.lower(), "PENDING_APPROVAL"),
+                                "servicenow_status": status.upper(),
+                                "status": main_status_map.get(status.lower(), "PENDING")
+                            }
+
+                            print(f"Updating Salesforce request {request_id} with: {update_payload}")
+
+                            update_response = await client.put(
+                                f"{sf_url}/api/accounts/requests/{request_id}",
+                                headers={
+                                    "Authorization": f"Bearer {sf_token}",
+                                    "Content-Type": "application/json"
+                                },
+                                json=update_payload
+                            )
+
+                            print(f"Salesforce update response: {update_response.status_code}")
+
+                            if update_response.status_code in [200, 201]:
+                                print(f"Successfully updated Salesforce request {request_id} with status {status}")
+                                return True
+                            else:
+                                print(f"Failed to update Salesforce: {update_response.text}")
 
             print(f"Could not find Salesforce request for ticket {ticket_number}")
             return False
@@ -136,6 +180,51 @@ async def update_salesforce_request_status(
         print(f"Error updating Salesforce: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+
+async def process_user_creation_approval(
+    ticket_number: str,
+    status: str,
+    comments: Optional[str],
+    db: Session
+):
+    """Process approval callback for SAP user creation tickets"""
+    try:
+        from app.models import UserCreationApproval
+
+        approval = db.query(UserCreationApproval).filter(
+            UserCreationApproval.servicenow_ticket_number == ticket_number
+        ).first()
+
+        if not approval:
+            return False
+
+        # Update approval status
+        approval.approval_status = status.lower()
+        approval.updated_at = datetime.utcnow()
+
+        if status.lower() == "approved":
+            approval.approved_at = datetime.utcnow()
+        elif status.lower() == "rejected":
+            approval.rejection_reason = comments
+
+        # Add to history
+        history_entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "status": status,
+            "comments": comments,
+            "source": "servicenow_webhook"
+        }
+        if not approval.history:
+            approval.history = []
+        approval.history.append(history_entry)
+
+        db.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error processing user creation approval: {e}")
         return False
 
 
@@ -148,7 +237,7 @@ async def servicenow_approval_webhook(
     """
     Webhook endpoint to receive approval status updates from ServiceNow.
     When a ticket is approved/rejected in ServiceNow, this endpoint is called
-    to propagate the status change to Salesforce.
+    to propagate the status change to Salesforce and handle user creation approvals.
     """
     try:
         # Log the webhook receipt
@@ -160,9 +249,18 @@ async def servicenow_approval_webhook(
         db.add(log)
         db.commit()
 
-        # Update Salesforce in background to not block the response
+        # Try Salesforce handler (existing)
         background_tasks.add_task(
             update_salesforce_request_status,
+            payload.ticket_number,
+            payload.status,
+            payload.comments,
+            db
+        )
+
+        # Try user creation handler (new)
+        background_tasks.add_task(
+            process_user_creation_approval,
             payload.ticket_number,
             payload.status,
             payload.comments,

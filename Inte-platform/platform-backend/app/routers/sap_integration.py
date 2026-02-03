@@ -3,7 +3,7 @@ SAP Integration Router - Send transformed data to SAP application
 Handles communication with SAP ERP on port 2004
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
@@ -396,4 +396,185 @@ async def preview_sap_xml(case_data: Dict[str, Any]):
         "xml": xml_output,
         "endpoint": f"{SAP_BASE_URL}{SAP_ENDPOINTS['load_request_xml']}",
         "content_type": "application/xml"
+    }
+
+
+@router.post("/webhook/sap-events")
+async def receive_sap_event(
+    event_data: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Receive events from SAP (user creation, updates, etc.)"""
+    event_type = event_data.get("event_type", "")
+    event_id = event_data.get("event_id", "")
+    correlation_id = event_data.get("correlation_id", "")
+
+    # Log event receipt
+    log = IntegrationLog(
+        integration_id=1,
+        level="INFO",
+        message=f"Received SAP event: {event_type} (ID: {event_id})"
+    )
+    db.add(log)
+    db.commit()
+
+    # Route based on event type
+    if event_type == "USER_CREATED":
+        background_tasks.add_task(
+            process_user_creation_event,
+            event_data,
+            db
+        )
+        return {
+            "success": True,
+            "message": f"USER_CREATED event {event_id} queued for processing",
+            "correlation_id": correlation_id,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+    else:
+        return {
+            "success": False,
+            "error": f"Unknown event type: {event_type}",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+
+
+async def process_user_creation_event(
+    event_data: Dict[str, Any],
+    db: Session
+):
+    """Process SAP USER_CREATED event and create ServiceNow incident"""
+    try:
+        payload = event_data.get("payload", {})
+        correlation_id = event_data.get("correlation_id", "")
+
+        username = payload.get("username", "")
+        roles = payload.get("roles", [])
+        created_at = payload.get("created_at", "")
+
+        # Transform to ServiceNow ticket format
+        case_data = {
+            "subject": f"New User Account Created: {username}",
+            "description": f"A new user account '{username}' has been created in SAP and requires approval.\n\n"
+                          f"Roles: {', '.join(roles)}\n"
+                          f"Created At: {created_at}\n"
+                          f"Source: SAP User Management\n"
+                          f"Correlation ID: {correlation_id}",
+            "priority": "Medium",
+            "category": "User Account",
+            "subcategory": "Account Creation",
+            "userName": username,
+            "userRoles": roles,
+            "requiresApproval": True,
+        }
+
+        # Send to ServiceNow as incident requiring approval
+        async with httpx.AsyncClient(timeout=30, verify=False) as client:
+            ticket_response = await client.post(
+                "http://localhost:8080/api/servicenow/send-ticket",
+                json={
+                    "case_data": case_data,
+                    "ticket_type": "incident",
+                    "priority": "3",
+                    "assignment_group": "Identity Management"
+                }
+            )
+
+            if ticket_response.status_code in [200, 201]:
+                result = ticket_response.json()
+                ticket_number = result.get("ticket_number", "UNKNOWN")
+
+                # Store approval tracking record
+                from app.models import UserCreationApproval
+                approval_record = UserCreationApproval(
+                    correlation_id=correlation_id,
+                    sap_username=username,
+                    sap_roles=roles,
+                    servicenow_ticket_number=ticket_number,
+                    approval_status="pending",
+                    sap_event_id=event_data.get("event_id", ""),
+                    history=[{
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "status": "created",
+                        "comments": "ServiceNow ticket created, awaiting approval"
+                    }]
+                )
+                db.add(approval_record)
+
+                # Log success
+                log = IntegrationLog(
+                    integration_id=1,
+                    level="INFO",
+                    message=f"Created ServiceNow ticket {ticket_number} for SAP user {username}"
+                )
+                db.add(log)
+                db.commit()
+                return True
+            else:
+                raise Exception(f"ServiceNow returned {ticket_response.status_code}")
+
+    except Exception as e:
+        log = IntegrationLog(
+            integration_id=1,
+            level="ERROR",
+            message=f"Failed to process USER_CREATED event: {str(e)}"
+        )
+        db.add(log)
+        db.commit()
+        return False
+
+
+@router.get("/user-approvals")
+async def list_user_creation_approvals(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    db: Session = Depends(get_db)
+):
+    """List all user creation approval records"""
+    from app.models import UserCreationApproval
+
+    query = db.query(UserCreationApproval)
+    if status:
+        query = query.filter(UserCreationApproval.approval_status == status)
+
+    approvals = query.order_by(UserCreationApproval.created_at.desc()).limit(50).all()
+
+    return {
+        "total": len(approvals),
+        "approvals": [
+            {
+                "id": a.id,
+                "sap_username": a.sap_username,
+                "servicenow_ticket_number": a.servicenow_ticket_number,
+                "approval_status": a.approval_status,
+                "created_at": a.created_at.isoformat() + "Z"
+            }
+            for a in approvals
+        ]
+    }
+
+
+@router.get("/user-approvals/{correlation_id}")
+async def get_user_approval_by_correlation(
+    correlation_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get user creation approval by correlation ID"""
+    from app.models import UserCreationApproval
+
+    approval = db.query(UserCreationApproval).filter(
+        UserCreationApproval.correlation_id == correlation_id
+    ).first()
+
+    if not approval:
+        raise HTTPException(status_code=404, detail="Approval record not found")
+
+    return {
+        "correlation_id": approval.correlation_id,
+        "sap_username": approval.sap_username,
+        "sap_roles": approval.sap_roles,
+        "servicenow_ticket_number": approval.servicenow_ticket_number,
+        "approval_status": approval.approval_status,
+        "history": approval.history,
+        "created_at": approval.created_at.isoformat() + "Z"
     }

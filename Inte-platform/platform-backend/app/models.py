@@ -125,3 +125,41 @@ class SalesforceCase(Base):
     last_modified_date = Column(DateTime)
     synced_at = Column(DateTime, default=datetime.utcnow)
     raw_data = Column(JSON)  # Store complete Salesforce response
+
+
+class PasswordResetTicket(Base):
+    __tablename__ = "password_reset_tickets"
+    id = Column(Integer, primary_key=True, index=True)
+    correlation_id = Column(String(255), unique=True, index=True)
+    servicenow_ticket_id = Column(String(255), index=True)
+    sap_ticket_id = Column(String(255), index=True)
+    username = Column(String(255))
+    user_email = Column(String(255))
+    requester_name = Column(String(255))
+    requester_email = Column(String(255))
+    reason = Column(Text)
+    priority = Column(String(50))
+    status = Column(String(50))  # pending, sent_to_sap, in_progress, completed, failed
+    sap_status = Column(String(50))
+    servicenow_updated = Column(Boolean, default=False)
+    history = Column(JSON, default=list)  # List of status changes
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserCreationApproval(Base):
+    __tablename__ = "user_creation_approvals"
+    id = Column(Integer, primary_key=True, index=True)
+    correlation_id = Column(String(255), unique=True, index=True)
+    sap_username = Column(String(255), index=True)
+    sap_roles = Column(JSON)
+    servicenow_ticket_number = Column(String(255), index=True)
+    servicenow_ticket_id = Column(String(255))
+    approval_status = Column(String(50), default="pending")
+    approved_by = Column(String(255))
+    approved_at = Column(DateTime)
+    rejection_reason = Column(Text)
+    sap_event_id = Column(String(255))
+    history = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
