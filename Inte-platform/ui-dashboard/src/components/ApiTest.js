@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Alert, Spin } from 'antd';
-import api from '../api';
+import { backendApi as api } from '../api';
 
 const ApiTest = () => {
   const [testResult, setTestResult] = useState(null);

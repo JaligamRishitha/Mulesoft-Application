@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Row, Col, Button, Table, Tag, Space, Modal, Form, Input, Select, message, Spin, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import api from '../api';
+import { backendApi as api } from '../api';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -135,18 +135,36 @@ export default function Connectors() {
       const { data } = await api.get('/connectors');
       setConnectors(data);
     } catch (err) {
-      setConnectors([
-        { id: 1, name: 'SAP S/4HANA Production', type: 'sap', status: 'active', last_tested: '2026-01-13T10:00:00Z' },
-        { id: 2, name: 'Salesforce CRM', type: 'salesforce', status: 'active', last_tested: '2026-01-13T09:30:00Z' },
-        { id: 3, name: 'PostgreSQL Analytics', type: 'database', status: 'inactive', last_tested: null },
-        { id: 4, name: 'Kafka Event Stream', type: 'kafka', status: 'error', last_tested: '2026-01-12T15:00:00Z' },
-      ]);
+      console.error('Failed to fetch connectors:', err.message);
     }
     setLoading(false);
   };
 
+  // MCP Server configurations
+  const mcpServers = {
+    salesforce: { url: 'http://149.102.158.71:8090', name: 'salesforce-crm', description: 'Salesforce CRM MCP Server' },
+    sap: { url: 'http://149.102.158.71:8092', name: 'sap-erp', description: 'SAP ERP MCP Server' },
+    servicenow: { url: 'http://149.102.158.71:8093', name: 'servicenow', description: 'ServiceNow ITSM MCP Server' },
+    database: { url: 'http://149.102.158.71:8091', name: 'mulesoft-api', description: 'MuleSoft HTTP REST API' },
+    http: { url: 'http://149.102.158.71:8091', name: 'mulesoft-api', description: 'MuleSoft HTTP REST API' }
+  };
+
   const defaultConfigSchema = {
-    server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' }
+    server_url: { type: 'string', label: 'Direct Server URL', required: false, placeholder: 'http://your-server-ip:port (optional - for direct connection)' },
+    mcp_server_url: {
+      type: 'select',
+      label: 'MCP Server',
+      required: false,
+      options: [
+        'http://149.102.158.71:8090 (Salesforce CRM)',
+        'http://149.102.158.71:8091 (MuleSoft API)',
+        'http://149.102.158.71:8092 (SAP ERP)',
+        'http://149.102.158.71:8093 (ServiceNow)',
+        'http://149.102.158.71:8094 (MuleSoft Integration)'
+      ],
+      placeholder: 'Select MCP Server'
+    },
+    mcp_server_name: { type: 'string', label: 'MCP Server Name', required: false, placeholder: 'Auto-filled based on selection' }
   };
 
   const fetchConnectorTypes = async () => {
@@ -161,18 +179,7 @@ export default function Connectors() {
         : data;
       setConnectorTypes(typesObj);
     } catch (err) {
-      setConnectorTypes({
-        sap: { name: 'SAP', description: 'Connect to remote SAP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        salesforce: { name: 'Salesforce', description: 'Connect to remote Salesforce backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        database: { name: 'Database', description: 'Connect to remote Database backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        http: { name: 'HTTP/REST', description: 'Connect to remote HTTP/REST backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        kafka: { name: 'Apache Kafka', description: 'Connect to remote Kafka backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        ftp: { name: 'FTP/SFTP', description: 'Connect to remote FTP/SFTP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        email: { name: 'Email', description: 'Connect to remote Email backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        aws_s3: { name: 'AWS S3', description: 'Connect to remote AWS S3 backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        azure_blob: { name: 'Azure Blob', description: 'Connect to remote Azure Blob backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-        soap: { name: 'SOAP', description: 'Connect to remote SOAP backend application', config_schema: { server_url: { type: 'string', label: 'Server URL', required: true, placeholder: 'http://your-server-ip:port' } } },
-      });
+      console.error('Failed to fetch connector types:', err.message);
     }
   };
 
@@ -184,23 +191,59 @@ export default function Connectors() {
     setModalVisible(true);
   };
 
+  // MCP URL to display format mapping
+  const mcpUrlToDisplay = {
+    'http://149.102.158.71:8090': 'http://149.102.158.71:8090 (Salesforce CRM)',
+    'http://149.102.158.71:8091': 'http://149.102.158.71:8091 (MuleSoft API)',
+    'http://149.102.158.71:8092': 'http://149.102.158.71:8092 (SAP ERP)',
+    'http://149.102.158.71:8093': 'http://149.102.158.71:8093 (ServiceNow)',
+    'http://149.102.158.71:8094': 'http://149.102.158.71:8094 (MuleSoft Integration)'
+  };
+
   const handleEdit = (record) => {
     setSelectedType(record.connector_type || record.type);
     setEditingConnector(record);
-    form.setFieldsValue({ name: record.name, description: record.description, ...record.connection_config, ...record.config });
+    const config = { ...record.connection_config, ...record.config };
+    // Convert MCP URL to display format for dropdown
+    if (config.mcp_server_url && mcpUrlToDisplay[config.mcp_server_url]) {
+      config.mcp_server_url = mcpUrlToDisplay[config.mcp_server_url];
+    }
+    form.setFieldsValue({ name: record.connector_name || record.name, description: record.description, ...config });
     setModalVisible(true);
+  };
+
+  // MCP server name mapping
+  const mcpServerNames = {
+    'http://149.102.158.71:8090': 'salesforce-crm',
+    'http://149.102.158.71:8091': 'mulesoft-api',
+    'http://149.102.158.71:8092': 'sap-erp',
+    'http://149.102.158.71:8093': 'servicenow',
+    'http://149.102.158.71:8094': 'mulesoft-integration'
   };
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
       const { name, description, ...connection_config } = values;
-      const payload = { 
-        name, 
-        connector_type: selectedType, 
-        connection_config 
+
+      // Extract just the URL from MCP server selection (remove description in parentheses)
+      if (connection_config.mcp_server_url) {
+        const urlMatch = connection_config.mcp_server_url.match(/^(http[^\s]+)/);
+        if (urlMatch) {
+          connection_config.mcp_server_url = urlMatch[1];
+          // Auto-set mcp_server_name if not provided
+          if (!connection_config.mcp_server_name) {
+            connection_config.mcp_server_name = mcpServerNames[connection_config.mcp_server_url] || '';
+          }
+        }
+      }
+
+      const payload = {
+        connector_name: name,
+        connector_type: selectedType,
+        connection_config
       };
-      
+
       if (editingConnector) {
         await api.put(`/connectors/${editingConnector.id}`, payload);
         message.success('Connector updated');
@@ -223,7 +266,8 @@ export default function Connectors() {
       message.success('Connector deleted');
       fetchConnectors();
     } catch (err) {
-      message.error('Failed to delete');
+      const errorMsg = err.response?.data?.detail || err.message || 'Failed to delete';
+      message.error(`Delete failed: ${errorMsg}`);
     }
   };
 
@@ -231,10 +275,15 @@ export default function Connectors() {
     setTestingId(id);
     try {
       const { data } = await api.post(`/connectors/${id}/test`);
-      message.success(data.success ? `Connection successful: ${data.message}` : `Connection failed: ${data.message}`);
+      if (data.success) {
+        message.success(`Connection successful: ${data.message}`);
+      } else {
+        message.error(`Connection failed: ${data.message}`);
+      }
       fetchConnectors();
     } catch (err) {
-      message.error('Test failed');
+      const errorMsg = err.response?.data?.detail || err.message || 'Test failed';
+      message.error(`Test failed: ${errorMsg}`);
     }
     setTestingId(null);
   };

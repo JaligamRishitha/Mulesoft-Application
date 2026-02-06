@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Switch, Tabs, Tag, Space, message, Popconfirm } from 'antd';
 import { PlusOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons';
-import api from '../api';
+import { backendApi as api } from '../api';
 
 export default function APIs() {
   const [endpoints, setEndpoints] = useState([]);

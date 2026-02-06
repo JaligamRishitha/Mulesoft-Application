@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Card, Select, Button, Space, Tag, Alert, Input, message } from 'antd';
 import { SendOutlined, CopyOutlined } from '@ant-design/icons';
-import api from '../api';
+import { backendApi as api } from '../api';
 
 const { Option } = Select;
 const { TextArea } = Input;

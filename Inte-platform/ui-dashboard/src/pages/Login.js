@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Form, Input, Button, Card, message, Tabs } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import api from '../api';
+import { backendApi } from '../api';
 
 export default function Login() {
   const [loading, setLoading] = useState(false);
@@ -11,7 +11,7 @@ export default function Login() {
   const handleLogin = async (values) => {
     setLoading(true);
     try {
-      const { data } = await api.post('/auth/login', values);
+      const { data } = await backendApi.post('/auth/login', values);
       localStorage.setItem('token', data.token);
       message.success('Login successful');
       navigate('/');
@@ -24,7 +24,7 @@ export default function Login() {
   const handleRegister = async (values) => {
     setLoading(true);
     try {
-      await api.post('/auth/register', { email: values.email, password: values.password, full_name: values.fullName });
+      await backendApi.post('/auth/register', { email: values.email, password: values.password, full_name: values.fullName });
       message.success('Registration successful! Please login.');
     } catch (err) {
       message.error(err.response?.data?.detail || 'Registration failed');

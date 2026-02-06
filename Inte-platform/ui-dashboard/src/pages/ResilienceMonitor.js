@@ -8,7 +8,7 @@ import {
   ReloadOutlined,
   WarningOutlined
 } from '@ant-design/icons';
-import api from '../api';
+import { backendApi as api } from '../api';
 
 const ResilienceMonitor = () => {
   const [status, setStatus] = useState(null);

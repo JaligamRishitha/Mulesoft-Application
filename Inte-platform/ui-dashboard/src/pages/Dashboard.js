@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Row, Col, Card, Statistic, Spin, Table, Tag, Progress, Badge } from 'antd';
 import { ApiOutlined, CloudServerOutlined, WarningOutlined, ThunderboltOutlined, ArrowUpOutlined, CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
-import api from '../api';
+import { backendApi as api } from '../api';
 import ApiTest from '../components/ApiTest';
 
 // Lightweight Line Chart Component (optimized)
